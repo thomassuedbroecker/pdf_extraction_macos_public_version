@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdf-manager"
+version = "0.1.0"
+description = "Offline macOS desktop app for scanning, filtering, inspecting, and exporting PDF metadata."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Local PDF Tools" }]
+dependencies = [
+  "PySide6-Essentials>=6.7",
+  "pypdf>=4.2",
+  "openpyxl>=3.1",
+  "platformdirs>=4.2",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0",
+]
+
+[project.scripts]
+pdf-manager = "pdf_manager.app:main"
+
+[tool.setuptools.packages.find]
+include = ["pdf_manager*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+markers = [
+  "unit: fast non-UI tests",
+  "ui: UI-related tests that may require a Qt environment",
+  "slow: slower integration-like tests",
+]
