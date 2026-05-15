@@ -289,3 +289,34 @@ def test_main_window_opens_latest_extracted_pdf(
     assert window.latest_extraction_pdf_label.text() == "latest.pdf"
     assert opened == [["open", "/tmp/latest.pdf"]]
     window.close()
+
+
+def test_main_window_clears_model_extraction_results(
+    qt_app: QApplication, monkeypatch: pytest.MonkeyPatch, temporary_config_path
+) -> None:
+    monkeypatch.setattr("pdf_manager.ui.main_window.subprocess.run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(AppConfig, "config_path", staticmethod(lambda: temporary_config_path))
+
+    window = MainWindow(config=AppConfig())
+    window._ollama_extraction_finished(
+        [
+            {
+                "file_name": "report.pdf",
+                "full_path": "/tmp/report.pdf",
+                "status": "complete",
+                "result": "Summary for report",
+            }
+        ]
+    )
+
+    window.clear_extraction_results()
+
+    assert window.extraction_result_table.rowCount() == 0
+    assert window.latest_extraction_pdf_path == ""
+    assert window.latest_extraction_pdf_label.text() == "No extracted PDF available."
+    assert not window.open_latest_extraction_pdf_button.isEnabled()
+    assert window.extraction_progress_label.text() == "No local extraction running."
+    assert window.extraction_elapsed_label.text() == "0:00"
+    assert window.ollama_parameters_label.text() == "Parameters: not used yet"
+    assert window.status.text() == "Model extraction results cleared."
+    window.close()

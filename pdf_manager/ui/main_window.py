@@ -604,6 +604,9 @@ class MainWindow(QMainWindow):
         self.reset_prompt_button = self._button("Reset", QStyle.SP_DialogResetButton)
         self.reset_prompt_button.setToolTip("Restore the default prompt")
         self.reset_prompt_button.clicked.connect(self._reset_prompt_to_default)
+        self.clear_results_button = self._button("Clear Results", QStyle.SP_DialogResetButton)
+        self.clear_results_button.setToolTip("Clear the model extraction results")
+        self.clear_results_button.clicked.connect(self.clear_extraction_results)
         self.stop_ollama_button = self._button("Stop", QStyle.SP_MediaStop)
         self.stop_ollama_button.setToolTip("Stop local extraction")
         self.stop_ollama_button.clicked.connect(self.stop_ollama_extraction)
@@ -611,6 +614,7 @@ class MainWindow(QMainWindow):
         run_prompt_row.addWidget(self.run_extraction_button)
         run_prompt_row.addWidget(self.save_prompt_button)
         run_prompt_row.addWidget(self.reset_prompt_button)
+        run_prompt_row.addWidget(self.clear_results_button)
         run_prompt_row.addWidget(self.stop_ollama_button)
         run_prompt_row.addStretch(1)
         ollama_layout.addRow("Local Extraction", run_prompt_row)
@@ -1084,6 +1088,14 @@ class MainWindow(QMainWindow):
             self.latest_extraction_pdf_label.setText(file_name or Path(path).name)
         else:
             self.latest_extraction_pdf_label.setText("No extracted PDF available.")
+
+    @Slot()
+    def clear_extraction_results(self) -> None:
+        self._set_extraction_results([])
+        self.extraction_progress_label.setText("No local extraction running.")
+        self.extraction_elapsed_label.setText("0:00")
+        self.ollama_parameters_label.setText("Parameters: not used yet")
+        self.status.setText("Model extraction results cleared.")
 
     def _folder_filter_changed(self, value: str) -> None:
         self.proxy.set_folder("" if value == "All folders" else value)

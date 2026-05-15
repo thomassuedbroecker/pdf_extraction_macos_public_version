@@ -2,10 +2,7 @@
 
 Local-first macOS desktop application for finding PDF files, inspecting PDF metadata, filtering the result set, and exporting the visible table to Excel.
 
-**The application runs fully offline.**
-**It does not use cloud services, proprietary APIs, or paid services.**
-
-Optional Ollama extraction talks only to a user-provided local Ollama server. Optional Docling PDF text extraction is available when Docling is installed separately.
+The application runs fully offline. It does not use cloud services, proprietary APIs, or paid services. Optional Ollama extraction talks only to a user-provided local Ollama server. Optional Docling PDF text extraction is available when Docling is installed separately.
 
 * Add folders
 
@@ -332,6 +329,7 @@ The UI includes a local extraction section for selected PDF rows:
 - `Extraction prompt`: editable custom prompt template
 - `Save`: saves prompt and Ollama settings
 - `Reset`: restores the prompt editor to the default extraction template
+- `Clear Results`: clears the model result table, latest extracted PDF, elapsed time, progress text, and last settings
 - `Stop`: cancels a running local Ollama extraction request
 - `Run Selected`: extracts PDF text for selected rows, renders the prompt once per file, and sends each file prompt to local Ollama
 - `Last settings`: shows the model and generation parameters used for the latest run
@@ -388,8 +386,8 @@ Latest local verification in this workspace:
 | Command | Result |
 |---|---|
 | `.venv/bin/python -m pytest tests/unit -m unit -q` | `25 passed` |
-| `.venv/bin/python -m pytest tests/ui -m ui -q` | `16 passed` |
-| `.venv/bin/python -m pytest -q` | `41 passed` |
+| `.venv/bin/python -m pytest tests/ui -m ui -q` | `17 passed` |
+| `.venv/bin/python -m pytest -q` | `42 passed` |
 
 Known warning:
 
@@ -451,6 +449,7 @@ UI tests validate table model behavior and basic window wiring. They mock Finder
 | `test_main_window_shows_ollama_extraction_progress` | `tests/ui/test_main_window_smoke.py` | Verifies the UI displays active local AI extraction progress. |
 | `test_main_window_shows_ollama_extraction_results_in_table` | `tests/ui/test_main_window_smoke.py` | Verifies local AI extraction results are displayed as file/result table rows. |
 | `test_main_window_opens_pdf_from_extraction_results` | `tests/ui/test_main_window_smoke.py` | Verifies a generated result row can open its related PDF. |
+| `test_main_window_clears_model_extraction_results` | `tests/ui/test_main_window_smoke.py` | Verifies model result reset clears the result table and related status fields. |
 
 ## Fast Validation
 
