@@ -7,6 +7,10 @@ Local-first macOS desktop application for finding PDF files, inspecting PDF meta
 
 Optional Ollama extraction talks only to a user-provided local Ollama server. Optional Docling PDF text extraction is available when Docling is installed separately.
 
+* Add folders
+
+![](./images/add-folders.gif)
+
 ## Objective
 
 Provide a simple desktop tool for building an inventory of PDFs on a Mac.
