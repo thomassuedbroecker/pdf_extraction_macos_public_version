@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from threading import Event
+
 import pytest
+from openpyxl import load_workbook
 
 pytest.importorskip("PySide6")
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from pdf_manager.core.config import AppConfig
 from pdf_manager.models.pdf_record import PdfRecord
-from pdf_manager.ui.main_window import MAX_PROMPT_FILES, MainWindow, WHOLE_MACHINE_ROOT
+from pdf_manager.ui.main_window import MAX_PROMPT_FILES, MainWindow, OllamaExtractionWorker, WHOLE_MACHINE_ROOT
 
 
 pytestmark = pytest.mark.ui
@@ -31,6 +34,23 @@ def test_main_window_can_be_created(
     assert window.model.rowCount() == 0
     assert "Found PDF files: 0" in window.scan_summary_label.text()
     assert "{text}" in window.prompt_input.toPlainText()
+    assert "Keep one PDF text variable" in window.prompt_parameters_label.text()
+    assert window.prompt_variable_status_label.text() == "PDF text variable found."
+    window.close()
+
+
+def test_main_window_warns_when_prompt_text_variable_is_missing(
+    qt_app: QApplication, monkeypatch: pytest.MonkeyPatch, temporary_config_path
+) -> None:
+    monkeypatch.setattr("pdf_manager.ui.main_window.subprocess.run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(AppConfig, "config_path", staticmethod(lambda: temporary_config_path))
+
+    window = MainWindow(config=AppConfig())
+
+    window.prompt_input.setPlainText("Summarize {file_name}")
+
+    assert "PDF text variable missing" in window.prompt_variable_status_label.text()
+    assert "{text} or {documents}" in window.prompt_variable_status_label.text()
     window.close()
 
 
@@ -229,6 +249,7 @@ def test_main_window_shows_ollama_extraction_results_in_table(
     assert window.extraction_result_table.cellWidget(0, 4) is not None
     assert window.latest_extraction_pdf_label.text() == "report.pdf"
     assert window.open_latest_extraction_pdf_button.isEnabled()
+    assert window.export_results_button.isEnabled()
     assert "temperature" in window.ollama_parameters_label.text()
     window.close()
 
@@ -315,8 +336,74 @@ def test_main_window_clears_model_extraction_results(
     assert window.latest_extraction_pdf_path == ""
     assert window.latest_extraction_pdf_label.text() == "No extracted PDF available."
     assert not window.open_latest_extraction_pdf_button.isEnabled()
+    assert not window.export_results_button.isEnabled()
     assert window.extraction_progress_label.text() == "No local extraction running."
     assert window.extraction_elapsed_label.text() == "0:00"
     assert window.ollama_parameters_label.text() == "Parameters: not used yet"
     assert window.status.text() == "Model extraction results cleared."
     window.close()
+
+
+def test_main_window_exports_model_extraction_results(
+    qt_app: QApplication, monkeypatch: pytest.MonkeyPatch, temporary_config_path, tmp_path
+) -> None:
+    monkeypatch.setattr("pdf_manager.ui.main_window.subprocess.run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(AppConfig, "config_path", staticmethod(lambda: temporary_config_path))
+    output = tmp_path / "llm-results.xlsx"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args, **kwargs: (str(output), "Excel Workbook (*.xlsx)"))
+
+    window = MainWindow(config=AppConfig())
+    window._set_extraction_results(
+        [
+            {
+                "file_name": "report.pdf",
+                "full_path": "/tmp/report.pdf",
+                "status": "complete",
+                "result": "Summary for report",
+            }
+        ]
+    )
+
+    window.export_extraction_results()
+
+    workbook = load_workbook(output)
+    sheet = workbook["LLM Results"]
+    assert sheet["A2"].value == "report.pdf"
+    assert sheet["D2"].value == "Summary for report"
+    assert "Exported 1 model result rows" in window.status.text()
+    window.close()
+
+
+def test_ollama_worker_always_sends_extracted_text_to_model(
+    monkeypatch: pytest.MonkeyPatch, sample_pdf_records: list[PdfRecord]
+) -> None:
+    prompts: list[str] = []
+    finished_results: list[object] = []
+
+    class FakeOllamaClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def generate(self, prompt: str, model: str, options: dict) -> str:
+            prompts.append(prompt)
+            return "model result"
+
+    monkeypatch.setattr("pdf_manager.ui.main_window.extract_pdf_text", lambda path: "Extracted body text")
+    monkeypatch.setattr("pdf_manager.ui.main_window.OllamaClient", FakeOllamaClient)
+
+    worker = OllamaExtractionWorker(
+        records=[sample_pdf_records[0]],
+        model="llama3.1:8b",
+        base_url="http://localhost:11434",
+        timeout_seconds=120,
+        options={},
+        extraction_backend="pypdf",
+        prompt_template="Summarize {file_name}",
+        stop_event=Event(),
+    )
+    worker.finished.connect(lambda results: finished_results.append(results))
+
+    worker.run()
+
+    assert prompts == ["Summarize alpha.pdf\n\nPDF text:\nExtracted body text"]
+    assert finished_results

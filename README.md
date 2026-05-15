@@ -8,6 +8,15 @@ The application runs fully offline. It does not use cloud services, proprietary 
 
 ![](./images/add-folders.gif)
 
+* LLM usage 
+
+![](./images/llm-results.gif)
+
+* Export result file
+
+![](./images/llm-export-result-file.gif)
+
+
 ## Objective
 
 Provide a simple desktop tool for building an inventory of PDFs on a Mac.
@@ -151,6 +160,7 @@ flowchart TB
     Unit --> ConfigTests[test_config.py]
     Unit --> PromptTests[test_prompts.py]
     Unit --> OllamaTests[test_ollama_client.py]
+    Unit --> DoclingTests[test_docling_adapter.py]
 
     UITests --> TableTests[test_table_model.py]
     UITests --> SmokeTests[test_main_window_smoke.py]
@@ -327,9 +337,11 @@ The UI includes a local extraction section for selected PDF rows:
 - `Runtime`: context window and request timeout controls
 - `PDF text`: choose fast `pypdf` extraction or slower Docling structured extraction
 - `Extraction prompt`: editable custom prompt template
+- `Prompt inputs`: always shows the variables users should keep available while editing the prompt
 - `Save`: saves prompt and Ollama settings
 - `Reset`: restores the prompt editor to the default extraction template
 - `Clear Results`: clears the model result table, latest extracted PDF, elapsed time, progress text, and last settings
+- `Export Results`: exports the model result rows to an `.xlsx` workbook
 - `Stop`: cancels a running local Ollama extraction request
 - `Run Selected`: extracts PDF text for selected rows, renders the prompt once per file, and sends each file prompt to local Ollama
 - `Last settings`: shows the model and generation parameters used for the latest run
@@ -340,22 +352,24 @@ During local AI extraction, the status bar and extraction progress label show li
 
 Selecting Docling shows a warning in the UI because Docling performs structured document conversion and can take significantly more time per PDF. If Docling is selected but not installed, the result table shows a per-file error instead of failing the whole app.
 
-The table supports multi-row selection for this prompt workflow. `Open PDF` and `Finder` operate on the first selected row in the main PDF table. Generated extraction result rows also include an `Open` button, and double-clicking a result row opens that PDF. After results are generated, the result list selects and scrolls to the latest available PDF row, and the `Extracted PDF` row keeps that PDF available through `Open latest PDF`.
+The table supports multi-row selection for this prompt workflow. `Open PDF` and `Finder` operate on the first selected row in the main PDF table. Generated extraction result rows also include an `Open` button, and double-clicking a result row opens that PDF. After results are generated, the result list selects and scrolls to the latest available PDF row, and the `Extracted PDF` row keeps that PDF available through `Open latest PDF`. Use `Export Results` to write the current LLM result rows to Excel.
 
-Prompt templates can use these placeholders:
+Prompt templates can use these inputs:
 
-- `{file_name}`
-- `{full_path}`
-- `{page_count}`
-- `{title}`
-- `{author}`
-- `{subject}`
-- `{producer}`
-- `{text}`
-- `{documents}`
-- `{file_count}`
+| Input | Source | Meaning |
+|---|---|---|
+| `{text}` | PDF extraction | Extracted PDF text sent to Ollama. |
+| `{documents}` | PDF extraction | Compatibility alias for `{text}`. |
+| `{file_name}` | PDF metadata | Current PDF file name. |
+| `{full_path}` | PDF metadata | Current PDF full path. |
+| `{page_count}` | PDF metadata | Current PDF page count, when available. |
+| `{title}` | PDF metadata | PDF title metadata, when available. |
+| `{author}` | PDF metadata | PDF author metadata, when available. |
+| `{subject}` | PDF metadata | PDF subject metadata, when available. |
+| `{producer}` | PDF metadata | PDF producer/application metadata, when available. |
+| `{file_count}` | Runtime | `1` for each per-file Ollama prompt call. |
 
-Ollama is called separately for each selected PDF, so file placeholders such as `{file_name}`, `{full_path}`, and `{page_count}` refer to the current file being processed. `{text}` contains the current file's extracted text. `{documents}` is kept as a compatibility alias for `{text}`, and `{file_count}` is `1` for each per-file prompt call.
+Ollama is called separately for each selected PDF, so file placeholders such as `{file_name}`, `{full_path}`, and `{page_count}` refer to the current file being processed. `{text}` contains the current file's extracted text. `{documents}` is kept as a compatibility alias for `{text}`, and `{file_count}` is `1` for each per-file prompt call. While editing the prompt, the app shows whether `{text}` or `{documents}` is present. If a custom prompt does not include either one, the app appends a `PDF text:` block automatically so Ollama still receives the extracted PDF text.
 
 The default prompt asks for a concise structured extraction with title/topic, summary, key entities, dates or amounts, action items or decisions, and uncertainty notes for each selected file. The displayed result is a table of file/result rows. Custom prompts are stored locally.
 
@@ -385,9 +399,9 @@ Latest local verification in this workspace:
 
 | Command | Result |
 |---|---|
-| `.venv/bin/python -m pytest tests/unit -m unit -q` | `25 passed` |
-| `.venv/bin/python -m pytest tests/ui -m ui -q` | `17 passed` |
-| `.venv/bin/python -m pytest -q` | `42 passed` |
+| `.venv/bin/python -m pytest tests/unit -m unit -q` | `26 passed` |
+| `.venv/bin/python -m pytest tests/ui -m ui -q` | `20 passed` |
+| `.venv/bin/python -m pytest -q` | `46 passed` |
 
 Known warning:
 
@@ -417,6 +431,7 @@ Unit tests validate core logic and do not launch the desktop UI.
 | `test_export_excel_contains_expected_headers` | `tests/unit/test_export_excel.py` | Verifies documented export headers. |
 | `test_export_excel_exports_filtered_records_only` | `tests/unit/test_export_excel.py` | Ensures export receives the visible record set. |
 | `test_export_excel_adds_metadata_sheet` | `tests/unit/test_export_excel.py` | Verifies export metadata sheet. |
+| `test_export_extraction_results_to_excel_creates_llm_results_sheet` | `tests/unit/test_export_excel.py` | Verifies LLM result rows export to an Excel workbook. |
 | `test_config_saves_and_loads_user_settings` | `tests/unit/test_config.py` | Verifies local settings persistence. |
 | `test_config_uses_platformdirs_application_path` | `tests/unit/test_config.py` | Verifies app-support config path behavior. |
 | `test_config_handles_missing_config_file` | `tests/unit/test_config.py` | Verifies default config startup. |
@@ -427,6 +442,7 @@ Unit tests validate core logic and do not launch the desktop UI.
 | `test_ollama_client_generates_with_streaming_disabled` | `tests/unit/test_ollama_client.py` | Verifies the local Ollama generate request body. |
 | `test_ollama_client_generates_with_options` | `tests/unit/test_ollama_client.py` | Verifies configurable Ollama generation options are sent in the request body. |
 | `test_docling_adapter_extracts_markdown_when_docling_is_available` | `tests/unit/test_docling_adapter.py` | Verifies the optional Docling adapter can extract Markdown-style text through a Docling-compatible converter. |
+| `test_docling_adapter_reports_missing_docling` | `tests/unit/test_docling_adapter.py` | Verifies missing optional Docling dependency produces a clear runtime error. |
 
 ### UI Tests
 
@@ -439,6 +455,7 @@ UI tests validate table model behavior and basic window wiring. They mock Finder
 | `test_table_model_filters_records` | `tests/ui/test_table_model.py` | Verifies search/filter behavior independent of the visible UI. |
 | `test_distribution_chart_builds_page_and_size_bins` | `tests/ui/test_table_model.py` | Verifies page-count and file-size histogram buckets. |
 | `test_main_window_can_be_created` | `tests/ui/test_main_window_smoke.py` | Verifies main window construction. |
+| `test_main_window_warns_when_prompt_text_variable_is_missing` | `tests/ui/test_main_window_smoke.py` | Verifies prompt editing warns when `{text}` or `{documents}` is missing. |
 | `test_main_window_can_start_entire_machine_scan_without_selected_folder` | `tests/ui/test_main_window_smoke.py` | Verifies whole-machine scan wiring from `/`. |
 | `test_main_window_scan_summary_shows_found_files_and_locations` | `tests/ui/test_main_window_smoke.py` | Verifies count, location summary, and chart data updates. |
 | `test_main_window_removes_selected_folder` | `tests/ui/test_main_window_smoke.py` | Verifies the selected folder can be removed and persisted. |
@@ -449,7 +466,10 @@ UI tests validate table model behavior and basic window wiring. They mock Finder
 | `test_main_window_shows_ollama_extraction_progress` | `tests/ui/test_main_window_smoke.py` | Verifies the UI displays active local AI extraction progress. |
 | `test_main_window_shows_ollama_extraction_results_in_table` | `tests/ui/test_main_window_smoke.py` | Verifies local AI extraction results are displayed as file/result table rows. |
 | `test_main_window_opens_pdf_from_extraction_results` | `tests/ui/test_main_window_smoke.py` | Verifies a generated result row can open its related PDF. |
+| `test_main_window_opens_latest_extracted_pdf` | `tests/ui/test_main_window_smoke.py` | Verifies the latest extracted PDF shortcut opens the most recent result PDF. |
 | `test_main_window_clears_model_extraction_results` | `tests/ui/test_main_window_smoke.py` | Verifies model result reset clears the result table and related status fields. |
+| `test_main_window_exports_model_extraction_results` | `tests/ui/test_main_window_smoke.py` | Verifies the main window exports LLM result rows to Excel. |
+| `test_ollama_worker_always_sends_extracted_text_to_model` | `tests/ui/test_main_window_smoke.py` | Verifies extracted PDF text is sent to Ollama even when a custom prompt omits `{text}`. |
 
 ## Fast Validation
 

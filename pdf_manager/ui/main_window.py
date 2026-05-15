@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
 )
 
 from pdf_manager.core.config import AppConfig
-from pdf_manager.core.export_excel import export_records_to_excel
+from pdf_manager.core.export_excel import export_extraction_results_to_excel, export_records_to_excel
 from pdf_manager.core.pdf_text import extract_pdf_text
 from pdf_manager.core.prompts import DEFAULT_EXTRACTION_PROMPT, render_prompt
 from pdf_manager.core.scanner import PdfScanner
@@ -132,7 +132,7 @@ class OllamaExtractionWorker(QObject):
                     if not text.strip():
                         result_rows.append(_extraction_result_row(record, "error", "No extractable text found in PDF"))
                         continue
-                    prompt = render_prompt(self.prompt_template, record, text)
+                    prompt = self._render_prompt(record, text)
                     result = client.generate(prompt=prompt, model=self.model, options=self.options)
                     result_rows.append(_extraction_result_row(record, "complete", result or "Ollama returned an empty response."))
                 except Exception as exc:
@@ -147,6 +147,12 @@ class OllamaExtractionWorker(QObject):
         if self.extraction_backend == "docling":
             return DoclingAdapter().extract_text(path)
         return extract_pdf_text(path)
+
+    def _render_prompt(self, record: PdfRecord, text: str) -> str:
+        prompt = render_prompt(self.prompt_template, record, text)
+        if "{text}" in self.prompt_template or "{documents}" in self.prompt_template:
+            return prompt
+        return prompt.rstrip() + "\n\nPDF text:\n" + text.strip()
 
 
 def _extraction_result_row(record: PdfRecord, status: str, result: str) -> dict[str, str]:
@@ -178,6 +184,7 @@ class MainWindow(QMainWindow):
         self.ollama_start_time: float | None = None
         self.ollama_last_progress_text = ""
         self.latest_extraction_pdf_path = ""
+        self.extraction_results: list[dict[str, str]] = []
 
         self.model = PdfTableModel(config.visible_columns or DEFAULT_COLUMNS.copy())
         self.proxy = PdfFilterProxyModel()
@@ -592,7 +599,21 @@ class MainWindow(QMainWindow):
         )
         self.prompt_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.prompt_input.setMinimumHeight(180)
+        self.prompt_input.textChanged.connect(self._update_prompt_variable_status)
         ollama_layout.addRow(self._section_header("Extraction prompt"))
+
+        self.prompt_parameters_label = QLabel(
+            "Keep one PDF text variable in the prompt: {text} or {documents}. Metadata inputs: {file_name}, {full_path}, "
+            "{page_count}, {title}, {author}, {subject}, {producer}. Count input: {file_count}."
+        )
+        self.prompt_parameters_label.setWordWrap(True)
+        self.prompt_parameters_label.setStyleSheet("color: #374151; font-size: 11px;")
+        ollama_layout.addRow("Prompt inputs", self.prompt_parameters_label)
+
+        self.prompt_variable_status_label = QLabel()
+        self.prompt_variable_status_label.setWordWrap(True)
+        self._update_prompt_variable_status()
+        ollama_layout.addRow("", self.prompt_variable_status_label)
 
         run_prompt_row = QHBoxLayout()
         self.run_extraction_button = self._button("Run Selected", QStyle.SP_MediaPlay)
@@ -607,6 +628,10 @@ class MainWindow(QMainWindow):
         self.clear_results_button = self._button("Clear Results", QStyle.SP_DialogResetButton)
         self.clear_results_button.setToolTip("Clear the model extraction results")
         self.clear_results_button.clicked.connect(self.clear_extraction_results)
+        self.export_results_button = self._button("Export Results", QStyle.SP_DialogSaveButton)
+        self.export_results_button.setToolTip("Export the model extraction results to Excel")
+        self.export_results_button.clicked.connect(self.export_extraction_results)
+        self.export_results_button.setEnabled(False)
         self.stop_ollama_button = self._button("Stop", QStyle.SP_MediaStop)
         self.stop_ollama_button.setToolTip("Stop local extraction")
         self.stop_ollama_button.clicked.connect(self.stop_ollama_extraction)
@@ -615,6 +640,7 @@ class MainWindow(QMainWindow):
         run_prompt_row.addWidget(self.save_prompt_button)
         run_prompt_row.addWidget(self.reset_prompt_button)
         run_prompt_row.addWidget(self.clear_results_button)
+        run_prompt_row.addWidget(self.export_results_button)
         run_prompt_row.addWidget(self.stop_ollama_button)
         run_prompt_row.addStretch(1)
         ollama_layout.addRow("Local Extraction", run_prompt_row)
@@ -906,6 +932,31 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Export failed", str(exc))
 
     @Slot()
+    def export_extraction_results(self) -> None:
+        if not self.extraction_results:
+            QMessageBox.information(self, "No model results", "Run local extraction before exporting results.")
+            return
+        start_dir = self.config.last_export_location or str(Path.home())
+        output, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export LLM results",
+            start_dir,
+            "Excel Workbook (*.xlsx)",
+        )
+        if not output:
+            return
+        if not output.lower().endswith(".xlsx"):
+            output += ".xlsx"
+        try:
+            export_extraction_results_to_excel(self.extraction_results, output)
+            self.config.last_export_location = str(Path(output).parent)
+            self.config.save()
+            self.status.setText(f"Exported {len(self.extraction_results)} model result rows to {output}")
+        except Exception as exc:
+            LOGGER.exception("LLM result export failed")
+            QMessageBox.warning(self, "Export failed", str(exc))
+
+    @Slot()
     def refresh_ollama_models(self) -> None:
         self._persist_ollama_settings()
         try:
@@ -1046,11 +1097,21 @@ class MainWindow(QMainWindow):
         return records
 
     def _set_extraction_results(self, results: list[dict[str, str]]) -> None:
+        self.extraction_results = [
+            {
+                "file_name": row.get("file_name", ""),
+                "full_path": row.get("full_path", ""),
+                "status": row.get("status", ""),
+                "result": row.get("result", ""),
+            }
+            for row in results
+        ]
+        self.export_results_button.setEnabled(bool(self.extraction_results))
         self.extraction_result_table.setRowCount(0)
         latest_pdf_row = -1
         latest_pdf_name = ""
         latest_pdf_path = ""
-        for row_data in results:
+        for row_data in self.extraction_results:
             row = self.extraction_result_table.rowCount()
             self.extraction_result_table.insertRow(row)
             values = [
@@ -1120,6 +1181,18 @@ class MainWindow(QMainWindow):
     def _text_filter_changed(self, index: int) -> None:
         self.proxy.set_text_extractable_filter(None if index == 0 else index == 1)
         self._update_scan_summary()
+
+    def _update_prompt_variable_status(self) -> None:
+        prompt = self.prompt_input.toPlainText() if hasattr(self, "prompt_input") else ""
+        has_text_variable = "{text}" in prompt or "{documents}" in prompt
+        if has_text_variable:
+            self.prompt_variable_status_label.setText("PDF text variable found.")
+            self.prompt_variable_status_label.setStyleSheet("color: #166534; font-size: 11px;")
+        else:
+            self.prompt_variable_status_label.setText(
+                "PDF text variable missing. Keep {text} or {documents}; otherwise the app appends the PDF text at the end."
+            )
+            self.prompt_variable_status_label.setStyleSheet("color: #92400e; font-size: 11px;")
 
     def _extraction_backend_changed(self) -> None:
         is_docling = self._selected_extraction_backend() == "docling"
