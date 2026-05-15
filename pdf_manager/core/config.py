@@ -44,6 +44,12 @@ class AppConfig:
     visible_columns: list[str] = field(default_factory=lambda: DEFAULT_VISIBLE_COLUMNS.copy())
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = ""
+    ollama_temperature: float = 0.2
+    ollama_top_p: float = 0.9
+    ollama_top_k: int = 40
+    ollama_num_predict: int = 1024
+    ollama_num_ctx: int = 4096
+    ollama_timeout_seconds: int = 120
     extraction_prompt: str = DEFAULT_EXTRACTION_PROMPT
 
     @staticmethod
@@ -65,6 +71,12 @@ class AppConfig:
                 visible_columns=list(payload.get("visible_columns", DEFAULT_VISIBLE_COLUMNS)),
                 ollama_base_url=str(payload.get("ollama_base_url", "http://localhost:11434")),
                 ollama_model=str(payload.get("ollama_model", "")),
+                ollama_temperature=float(payload.get("ollama_temperature", 0.2)),
+                ollama_top_p=float(payload.get("ollama_top_p", 0.9)),
+                ollama_top_k=int(payload.get("ollama_top_k", 40)),
+                ollama_num_predict=int(payload.get("ollama_num_predict", 1024)),
+                ollama_num_ctx=int(payload.get("ollama_num_ctx", 4096)),
+                ollama_timeout_seconds=int(payload.get("ollama_timeout_seconds", 120)),
                 extraction_prompt=str(payload.get("extraction_prompt", DEFAULT_EXTRACTION_PROMPT)),
             )
         except (OSError, json.JSONDecodeError, TypeError) as exc:
@@ -81,6 +93,12 @@ class AppConfig:
             "visible_columns": self.visible_columns,
             "ollama_base_url": self.ollama_base_url,
             "ollama_model": self.ollama_model,
+            "ollama_temperature": self.ollama_temperature,
+            "ollama_top_p": self.ollama_top_p,
+            "ollama_top_k": self.ollama_top_k,
+            "ollama_num_predict": self.ollama_num_predict,
+            "ollama_num_ctx": self.ollama_num_ctx,
+            "ollama_timeout_seconds": self.ollama_timeout_seconds,
             "extraction_prompt": self.extraction_prompt,
         }
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")

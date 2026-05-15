@@ -15,7 +15,7 @@ The first version focuses on:
 - handling unreadable, corrupt, encrypted, and protected files without crashing
 - filtering and sorting PDF records in a desktop table
 - exporting the current filtered table to `.xlsx`
-- running custom local extraction prompts against one to ten selected PDFs through Ollama
+- running custom local extraction prompts against selected PDFs through Ollama
 - keeping the architecture ready for later Docling and agent-based inspection
 
 ## What You Can Run
@@ -31,6 +31,22 @@ Or, after editable installation:
 ```bash
 pdf-manager
 ```
+
+### Generate a macOS app bundle
+
+Create a clickable macOS launcher app inside this repository:
+
+```bash
+.venv/bin/python scripts/build_macos_app.py
+```
+
+The generated bundle is written to:
+
+```text
+mac_app/PDF Manager.app
+```
+
+This app bundle launches the repository code with `.venv/bin/python` when the virtual environment exists, and falls back to `python3` on `PATH`. It is a repo-local launcher, not a standalone signed installer.
 
 ### Optional local Ollama API check
 
@@ -172,7 +188,16 @@ python -m pdf_manager.app
 
 If you see `ModuleNotFoundError: No module named 'pdf_manager'`, run the command from the repository root or activate the virtual environment where the editable install was executed.
 
-### 4. Optional: use local Ollama extraction
+### 4. Optional: generate the macOS app launcher
+
+```bash
+.venv/bin/python scripts/build_macos_app.py
+open "mac_app/PDF Manager.app"
+```
+
+The generated `PDF Manager.app` stays under `mac_app/` in the repository. To write the bundle somewhere else, pass `--output-dir /path/to/output`.
+
+### 5. Optional: use local Ollama extraction
 
 Start Ollama and make sure at least one local model is available:
 
@@ -184,11 +209,12 @@ curl http://localhost:11434/api/tags
 In the app:
 
 1. Scan PDFs.
-2. Select one to ten rows in the PDF table.
+2. Select one or more rows in the PDF table.
 3. Enter the Ollama URL, usually `http://localhost:11434`.
 4. Enter a local model name, for example `llama3.1:8b`.
-5. Edit the extraction prompt.
-6. Select `Run Prompt on Selected PDFs`.
+5. Adjust optional generation settings if needed.
+6. Edit the extraction prompt.
+7. Select `Run Selected`.
 
 ## Main Components
 
@@ -196,6 +222,7 @@ In the app:
 |---|---|---|
 | App entry point | `pdf_manager/app.py` | Starts the PySide6 application. |
 | UI | `pdf_manager/ui/main_window.py`, `pdf_manager/ui/table_model.py` | Desktop window, table, filtering, background scan wiring, open/reveal actions, custom prompt controls. |
+| macOS app launcher | `scripts/build_macos_app.py` | Generates `mac_app/PDF Manager.app` inside the repository. |
 | Charts | `pdf_manager/ui/distribution_chart.py` | Page-count and file-size distribution histograms for visible PDF records. |
 | Scanner | `pdf_manager/core/scanner.py` | Recursively finds PDFs, including whole-machine scans from `/`, while skipping inaccessible folders. |
 | Metadata | `pdf_manager/core/pdf_metadata.py` | Extracts file and PDF metadata with `pypdf`. |
@@ -210,12 +237,14 @@ In the app:
 
 ## Current Application Behavior
 
+The main window identifies the app as `PDF Manager - Python desktop app`.
+
 ### Scan Scope
 
 The app supports two scan modes:
 
 - `Start Scan`: scans folders added with the `Add Folder` button.
-- `Scan Entire Machine`: scans from `/`.
+- `Scan All`: scans from `/`.
 
 Whole-machine scans can take a long time. macOS privacy controls can deny access to protected locations. The scanner skips inaccessible folders, logs the technical detail, and continues scanning the rest of the filesystem. During discovery, the status bar shows the directory currently being searched.
 
@@ -263,7 +292,7 @@ The UI table supports sorting and filtering by:
 - encrypted or not encrypted
 - text extractable or not extractable
 
-The `Export XLSX` action exports the current visible table result, not necessarily the full scan result. The workbook includes a `PDFs` sheet and an `Export Metadata` sheet with the export timestamp, scan roots, and visible columns.
+The `Export` action exports the current visible table result to `.xlsx`, not necessarily the full scan result. The workbook includes a `PDFs` sheet and an `Export Metadata` sheet with the export timestamp, scan roots, and visible columns.
 
 ### Custom Local Ollama Extraction
 
@@ -271,13 +300,20 @@ The UI includes a local extraction section for selected PDF rows:
 
 - `Ollama URL`: local Ollama base URL, default `http://localhost:11434`
 - `Ollama Model`: local model name, for example `llama3.1:8b`
-- `Extraction Prompt`: editable custom prompt template
-- `Run Prompt on Selected PDFs`: extracts capped PDF text for one to ten selected PDFs, renders the prompt once per file, and sends each file prompt to local Ollama
-- `Extraction Result`: read-only table with one row per related file and columns for file, path, status, and result/error
+- `Generation`: temperature and top-p controls
+- `Limits`: top-k and max token controls
+- `Runtime`: context window and request timeout controls
+- `Extraction prompt`: editable custom prompt template
+- `Save`: saves prompt and Ollama settings
+- `Reset`: restores the prompt editor to the default extraction template
+- `Stop`: cancels a running local Ollama extraction request
+- `Run Selected`: extracts PDF text for selected rows, renders the prompt once per file, and sends each file prompt to local Ollama
+- `Last settings`: shows the model and generation parameters used for the latest run
+- `Extraction result`: read-only table with one row per related file and columns for file, path, status, result/error, and an `Open` action
 
 During local AI extraction, the status bar and extraction progress label show live progress such as `Ollama extraction running: 2/5 - report.pdf`. This is intended to make long-running local model calls visibly active instead of looking like the desktop app has stalled.
 
-The table supports multi-row selection for this prompt workflow. `Open PDF` and `Reveal in Finder` still operate on the first selected row.
+The table supports multi-row selection for this prompt workflow. `Open PDF` and `Finder` operate on the first selected row in the main PDF table. Generated extraction result rows also include an `Open` button, and double-clicking a result row opens that PDF.
 
 Prompt templates can use these placeholders:
 
@@ -314,7 +350,7 @@ platformdirs.user_log_dir("PDF Manager", "Local PDF Tools")
 
 The app does not write scan results automatically. Excel files are only created when the user explicitly exports.
 
-The custom Ollama URL, model name, and extraction prompt are stored in the same local JSON config file as the other user settings.
+The custom Ollama URL, model name, generation parameters, request timeout, and extraction prompt are stored in the same local JSON config file as the other user settings.
 
 ## Current Verified State
 
@@ -322,9 +358,9 @@ Latest local verification in this workspace:
 
 | Command | Result |
 |---|---|
-| `.venv/bin/python -m pytest tests/unit -m unit` | `22 passed` |
-| `.venv/bin/python -m pytest tests/ui -m ui` | `11 passed` |
-| `.venv/bin/python -m pytest` | `33 passed` |
+| `.venv/bin/python -m pytest tests/unit -m unit -q` | `23 passed` |
+| `.venv/bin/python -m pytest tests/ui -m ui -q` | `13 passed` |
+| `.venv/bin/python -m pytest -q` | `36 passed` |
 
 Known warning:
 
@@ -362,10 +398,11 @@ Unit tests validate core logic and do not launch the desktop UI.
 | `test_format_extraction_result_item_includes_file_and_result` | `tests/unit/test_prompts.py` | Verifies per-file extraction output includes the related file and result status. |
 | `test_ollama_client_lists_local_models` | `tests/unit/test_ollama_client.py` | Verifies local model list parsing without requiring a live Ollama server. |
 | `test_ollama_client_generates_with_streaming_disabled` | `tests/unit/test_ollama_client.py` | Verifies the local Ollama generate request body. |
+| `test_ollama_client_generates_with_options` | `tests/unit/test_ollama_client.py` | Verifies configurable Ollama generation options are sent in the request body. |
 
 ### UI Tests
 
-UI tests validate table model behavior and basic window wiring. They do not open Finder, open PDFs, or require manual interaction.
+UI tests validate table model behavior and basic window wiring. They mock Finder/PDF open calls and do not require manual interaction.
 
 | Test case | File | Reason |
 |---|---|---|
@@ -376,10 +413,12 @@ UI tests validate table model behavior and basic window wiring. They do not open
 | `test_main_window_can_be_created` | `tests/ui/test_main_window_smoke.py` | Verifies main window construction. |
 | `test_main_window_can_start_entire_machine_scan_without_selected_folder` | `tests/ui/test_main_window_smoke.py` | Verifies whole-machine scan wiring from `/`. |
 | `test_main_window_scan_summary_shows_found_files_and_locations` | `tests/ui/test_main_window_smoke.py` | Verifies count, location summary, and chart data updates. |
-| `test_main_window_persists_custom_ollama_prompt_settings` | `tests/ui/test_main_window_smoke.py` | Verifies custom Ollama URL, model, and prompt settings are saved locally. |
-| `test_main_window_limits_prompt_extraction_to_ten_files` | `tests/ui/test_main_window_smoke.py` | Verifies multi-file prompt extraction enforces the ten-PDF selection limit before starting a worker. |
+| `test_main_window_persists_custom_ollama_prompt_settings` | `tests/ui/test_main_window_smoke.py` | Verifies custom Ollama URL, model, generation parameters, timeout, and prompt settings are saved locally. |
+| `test_main_window_resets_prompt_to_default` | `tests/ui/test_main_window_smoke.py` | Verifies the reset action restores the default extraction prompt. |
+| `test_main_window_allows_more_than_ten_prompt_extraction_files` | `tests/ui/test_main_window_smoke.py` | Verifies multi-file prompt extraction can start with more than ten selected PDFs. |
 | `test_main_window_shows_ollama_extraction_progress` | `tests/ui/test_main_window_smoke.py` | Verifies the UI displays active local AI extraction progress. |
 | `test_main_window_shows_ollama_extraction_results_in_table` | `tests/ui/test_main_window_smoke.py` | Verifies local AI extraction results are displayed as file/result table rows. |
+| `test_main_window_opens_pdf_from_extraction_results` | `tests/ui/test_main_window_smoke.py` | Verifies a generated result row can open its related PDF. |
 
 ## Fast Validation
 
@@ -497,6 +536,10 @@ pdf_manager/
     agent_interface.py
   models/
     pdf_record.py
+scripts/
+  build_macos_app.py
+mac_app/
+  PDF Manager.app/
 tests/
   conftest.py
   unit/

@@ -18,6 +18,12 @@ def test_config_saves_and_loads_user_settings(monkeypatch: pytest.MonkeyPatch, t
         visible_columns=["file_name", "page_count"],
         ollama_base_url="http://localhost:11434",
         ollama_model="llama3.1:8b",
+        ollama_temperature=0.4,
+        ollama_top_p=0.8,
+        ollama_top_k=30,
+        ollama_num_predict=2048,
+        ollama_num_ctx=8192,
+        ollama_timeout_seconds=180,
         extraction_prompt="Extract {text}",
     )
 
@@ -29,6 +35,12 @@ def test_config_saves_and_loads_user_settings(monkeypatch: pytest.MonkeyPatch, t
     assert loaded.visible_columns == ["file_name", "page_count"]
     assert loaded.ollama_base_url == "http://localhost:11434"
     assert loaded.ollama_model == "llama3.1:8b"
+    assert loaded.ollama_temperature == 0.4
+    assert loaded.ollama_top_p == 0.8
+    assert loaded.ollama_top_k == 30
+    assert loaded.ollama_num_predict == 2048
+    assert loaded.ollama_num_ctx == 8192
+    assert loaded.ollama_timeout_seconds == 180
     assert loaded.extraction_prompt == "Extract {text}"
 
 
@@ -49,4 +61,10 @@ def test_config_handles_missing_config_file(monkeypatch: pytest.MonkeyPatch, tem
     assert "file_name" in config.visible_columns
     assert config.ollama_base_url == "http://localhost:11434"
     assert config.ollama_model == ""
+    assert config.ollama_temperature == 0.2
+    assert config.ollama_top_p == 0.9
+    assert config.ollama_top_k == 40
+    assert config.ollama_num_predict == 1024
+    assert config.ollama_num_ctx == 4096
+    assert config.ollama_timeout_seconds == 120
     assert "{text}" in config.extraction_prompt

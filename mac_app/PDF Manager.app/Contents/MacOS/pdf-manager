@@ -1,0 +1,13 @@
+#!/bin/zsh
+set -e
+
+REPO_ROOT='/Users/thomassuedbroecker/Documents/dev/gpt_codex/pdf_extraction_mac'
+if [ -x "$REPO_ROOT/.venv/bin/python" ]; then
+  PYTHON="$REPO_ROOT/.venv/bin/python"
+else
+  PYTHON="$(command -v python3)"
+fi
+
+export PYTHONPATH="$REPO_ROOT:${PYTHONPATH:-}"
+cd "$REPO_ROOT"
+exec "$PYTHON" -m pdf_manager.app

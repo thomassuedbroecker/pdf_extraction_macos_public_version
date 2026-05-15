@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import time
 from pathlib import Path
 from threading import Event
 
-from PySide6.QtCore import QObject, QThread, Signal, Slot, Qt
+from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot, Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -22,7 +24,11 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QPlainTextEdit,
+    QScrollArea,
+    QSplitter,
+    QSizePolicy,
     QSpinBox,
+    QStyle,
     QDoubleSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -35,7 +41,7 @@ from PySide6.QtWidgets import (
 from pdf_manager.core.config import AppConfig
 from pdf_manager.core.export_excel import export_records_to_excel
 from pdf_manager.core.pdf_text import extract_pdf_text
-from pdf_manager.core.prompts import render_prompt
+from pdf_manager.core.prompts import DEFAULT_EXTRACTION_PROMPT, render_prompt
 from pdf_manager.core.scanner import PdfScanner
 from pdf_manager.integrations.ollama_client import OllamaClient
 from pdf_manager.models.pdf_record import PdfRecord
@@ -44,7 +50,7 @@ from pdf_manager.ui.table_model import DEFAULT_COLUMNS, PdfFilterProxyModel, Pdf
 
 LOGGER = logging.getLogger(__name__)
 WHOLE_MACHINE_ROOT = "/"
-MAX_PROMPT_FILES = 10
+MAX_PROMPT_FILES = 0  # 0 means no explicit selection limit for Ollama extraction
 
 
 class ScanWorker(QObject):
@@ -86,28 +92,44 @@ class OllamaExtractionWorker(QObject):
     finished = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, records: list[PdfRecord], model: str, base_url: str, prompt_template: str) -> None:
+    def __init__(
+        self,
+        records: list[PdfRecord],
+        model: str,
+        base_url: str,
+        timeout_seconds: int,
+        options: dict[str, float | int],
+        prompt_template: str,
+        stop_event: Event,
+    ) -> None:
         super().__init__()
         self.records = records
         self.model = model
         self.base_url = base_url
+        self.timeout_seconds = timeout_seconds
+        self.options = options
         self.prompt_template = prompt_template
+        self.stop_event = stop_event
 
     @Slot()
     def run(self) -> None:
         try:
-            client = OllamaClient(base_url=self.base_url)
+            client = OllamaClient(base_url=self.base_url, timeout_seconds=self.timeout_seconds)
             result_rows: list[dict[str, str]] = []
             total = len(self.records)
             for current, record in enumerate(self.records, start=1):
+                if self.stop_event.is_set():
+                    break
                 self.progress.emit(current, total, record.file_name)
                 try:
                     text = extract_pdf_text(record.full_path)
+                    if self.stop_event.is_set():
+                        break
                     if not text.strip():
                         result_rows.append(_extraction_result_row(record, "error", "No extractable text found in PDF"))
                         continue
                     prompt = render_prompt(self.prompt_template, record, text)
-                    result = client.generate(prompt=prompt, model=self.model)
+                    result = client.generate(prompt=prompt, model=self.model, options=self.options)
                     result_rows.append(_extraction_result_row(record, "complete", result or "Ollama returned an empty response."))
                 except Exception as exc:
                     LOGGER.exception("Ollama extraction failed for %s", record.full_path)
@@ -140,75 +162,231 @@ class MainWindow(QMainWindow):
         self.scan_worker: ScanWorker | None = None
         self.ollama_thread: QThread | None = None
         self.ollama_worker: OllamaExtractionWorker | None = None
+        self.ollama_stop_event: Event | None = None
+        self.ollama_timer = QTimer(self)
+        self.ollama_timer.timeout.connect(self._ollama_timer_tick)
+        self.ollama_timer.setInterval(500)
+        self.ollama_start_time: float | None = None
+        self.ollama_last_progress_text = ""
 
         self.model = PdfTableModel(config.visible_columns or DEFAULT_COLUMNS.copy())
         self.proxy = PdfFilterProxyModel()
         self.proxy.setSourceModel(self.model)
 
         self.setWindowTitle("PDF Manager")
-        self.resize(1400, 760)
+        self.resize(1280, 720)
         self._build_ui()
         self._update_folder_label()
         self._update_folder_filter_options()
 
+    def _button(self, text: str, icon: QStyle.StandardPixmap) -> QPushButton:
+        button = QPushButton(text)
+        button.setIcon(self.style().standardIcon(icon))
+        button.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+        return button
+
+    def _section_header(self, text: str) -> QLabel:
+        label = QLabel(text)
+        label.setStyleSheet("color: #111111; font-size: 14px; font-weight: 700;")
+        return label
+
+    def _app_header(self) -> QLabel:
+        label = QLabel("PDF Manager - Python desktop app")
+        label.setStyleSheet("color: #0f172a; font-size: 18px; font-weight: 800;")
+        return label
+
     def _build_ui(self) -> None:
         toolbar = QToolBar("Main")
+        toolbar.setMovable(False)
+        toolbar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.addToolBar(toolbar)
 
-        choose_button = QPushButton("Add Folder")
+        choose_button = self._button("Add Folder", QStyle.SP_DirOpenIcon)
+        choose_button.setToolTip("Add a folder to scan for PDFs")
         choose_button.clicked.connect(self.choose_folders)
         toolbar.addWidget(choose_button)
 
-        self.start_button = QPushButton("Start Scan")
+        self.start_button = self._button("Start Scan", QStyle.SP_MediaPlay)
+        self.start_button.setToolTip("Scan the selected folders")
         self.start_button.clicked.connect(self.start_scan)
         toolbar.addWidget(self.start_button)
 
-        self.scan_all_button = QPushButton("Scan Entire Machine")
+        self.scan_all_button = self._button("Scan All", QStyle.SP_DriveHDIcon)
+        self.scan_all_button.setToolTip("Scan the entire machine")
         self.scan_all_button.clicked.connect(self.start_entire_machine_scan)
         toolbar.addWidget(self.scan_all_button)
 
-        self.stop_button = QPushButton("Stop")
+        self.stop_button = self._button("Stop", QStyle.SP_MediaStop)
+        self.stop_button.setToolTip("Stop the current scan")
         self.stop_button.clicked.connect(self.stop_scan)
         self.stop_button.setEnabled(False)
         toolbar.addWidget(self.stop_button)
 
-        refresh_button = QPushButton("Refresh")
+        refresh_button = self._button("Refresh", QStyle.SP_BrowserReload)
+        refresh_button.setToolTip("Run the last scan again")
         refresh_button.clicked.connect(self.refresh_scan)
         toolbar.addWidget(refresh_button)
 
-        export_button = QPushButton("Export XLSX")
+        export_button = self._button("Export", QStyle.SP_DialogSaveButton)
+        export_button.setToolTip("Export the visible PDF list to Excel")
         export_button.clicked.connect(self.export_current_view)
         toolbar.addWidget(export_button)
 
-        open_button = QPushButton("Open PDF")
+        open_button = self._button("Open PDF", QStyle.SP_FileIcon)
+        open_button.setToolTip("Open the selected PDF")
         open_button.clicked.connect(self.open_selected_pdf)
         toolbar.addWidget(open_button)
 
-        reveal_button = QPushButton("Reveal in Finder")
+        reveal_button = self._button("Finder", QStyle.SP_DirIcon)
+        reveal_button.setToolTip("Show the selected PDF in Finder")
         reveal_button.clicked.connect(self.reveal_selected_pdf)
         toolbar.addWidget(reveal_button)
 
         central = QWidget()
-        layout = QVBoxLayout(central)
+        central.setStyleSheet("""
+            QWidget {
+                background-color: #f8fafc;
+            }
+            QToolBar {
+                background: transparent;
+                spacing: 6px;
+                padding: 4px 0;
+            }
+            QPushButton {
+                background-color: #1d4ed8;
+                color: white;
+                border: 1px solid #1e40af;
+                border-radius: 7px;
+                padding: 7px 10px;
+                min-height: 32px;
+                font-weight: 700;
+                text-transform: none;
+            }
+            QPushButton:hover:enabled {
+                background-color: #1e40af;
+            }
+            QPushButton:pressed:enabled {
+                background-color: #1e3a8a;
+            }
+            QPushButton:disabled {
+                background-color: #64748b;
+                color: #f8fafc;
+                border-color: #475569;
+            }
+            QLineEdit, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {
+                background-color: #f4f6fb;
+                color: #0f172a;
+                border: 1px solid #cbd5e1;
+                border-radius: 7px;
+                padding: 8px 10px;
+                min-height: 30px;
+            }
+            QPlainTextEdit {
+                background-color: #ffffff;
+            }
+            QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
+                border: 1px solid #2563eb;
+                background-color: #ffffff;
+            }
+            QComboBox {
+                padding-right: 24px;
+            }
+            QComboBox::drop-down {
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 24px;
+                border-left: 1px solid #cbd5e1;
+            }
+            QTableWidget, QTableView {
+                background-color: #ffffff;
+                color: #0f172a;
+                border: 1px solid #d1d5db;
+                gridline-color: #e5e7eb;
+            }
+            QTableView::item:selected, QTableWidget::item:selected {
+                background-color: #dbeafe;
+                color: #1e3a8a;
+            }
+            QHeaderView::section {
+                background-color: #e2e8f0;
+                border: 1px solid #cbd5e1;
+                padding: 6px 8px;
+                font-weight: 700;
+                color: #0f172a;
+            }
+            QLabel {
+                color: #0f172a;
+                font-weight: 600;
+            }
+        """)
+        main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(12, 12, 12, 12)
+        main_layout.setSpacing(12)
+
+        self.app_title_label = self._app_header()
+        main_layout.addWidget(self.app_title_label)
 
         self.folder_label = QLabel()
-        layout.addWidget(self.folder_label)
-
         self.scan_summary_label = QLabel()
         self.scan_summary_label.setWordWrap(True)
-        layout.addWidget(self.scan_summary_label)
 
+        top_splitter = QSplitter(Qt.Horizontal)
+        top_splitter.setChildrenCollapsible(False)
+        top_splitter.setOpaqueResize(True)
+        top_splitter.setHandleWidth(10)
+
+        chart_panel = QWidget()
+        chart_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        chart_panel.setMinimumWidth(220)
+        chart_panel.setStyleSheet(
+            "background-color: #eff6ff; color: #111111; border: 1px solid #dbeafe; border-radius: 10px;"
+        )
+        chart_layout = QVBoxLayout(chart_panel)
+        chart_layout.setContentsMargins(10, 10, 10, 10)
+        chart_layout.setSpacing(10)
+        chart_header = QLabel("Charts")
+        chart_header.setStyleSheet("color: #111111; font-size: 12px; font-weight: 700;")
+        chart_layout.addWidget(chart_header)
         self.distribution_chart = DistributionChartWidget()
-        layout.addWidget(self.distribution_chart)
+        self.distribution_chart.setMinimumHeight(140)
+        chart_layout.addWidget(self.distribution_chart)
+        chart_scroll = QScrollArea()
+        chart_scroll.setWidgetResizable(True)
+        chart_scroll.setFrameShape(QScrollArea.NoFrame)
+        chart_scroll.setWidget(chart_panel)
+        top_splitter.addWidget(chart_scroll)
+
+        config_panel = QWidget()
+        config_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        config_panel.setMinimumWidth(260)
+        config_panel.setStyleSheet(
+            "background-color: #ecfdf5; color: #111111; border: 1px solid #bbf7d0; border-radius: 10px;"
+        )
+        config_layout = QVBoxLayout(config_panel)
+        config_layout.setContentsMargins(10, 10, 10, 10)
+        config_layout.setSpacing(10)
+        config_header = self._section_header("Configuration")
+        config_layout.addWidget(config_header)
+        config_layout.addWidget(self.folder_label)
+        config_layout.addWidget(self.scan_summary_label)
+
+        self.refresh_section_button = self._button("Refresh", QStyle.SP_BrowserReload)
+        self.refresh_section_button.setToolTip("Run the last scan again")
+        self.refresh_section_button.clicked.connect(self.refresh_scan)
+        config_layout.addWidget(self.refresh_section_button)
 
         filter_layout = QFormLayout()
+        filter_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        filter_layout.setRowWrapPolicy(QFormLayout.WrapLongRows)
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Search file name, path, metadata, preview, or errors")
+        self.search_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.search_input.textChanged.connect(self.proxy.set_search_text)
         self.search_input.textChanged.connect(lambda _: self._update_scan_summary())
         filter_layout.addRow("Search", self.search_input)
 
         self.folder_filter = QComboBox()
+        self.folder_filter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.folder_filter.currentTextChanged.connect(self._folder_filter_changed)
         filter_layout.addRow("Folder", self.folder_filter)
 
@@ -224,6 +402,8 @@ class MainWindow(QMainWindow):
         page_range.addWidget(self.min_pages)
         page_range.addWidget(QLabel("to"))
         page_range.addWidget(self.max_pages)
+        page_range.setStretch(0, 1)
+        page_range.setStretch(2, 1)
         filter_layout.addRow("Pages", page_range)
 
         size_range = QHBoxLayout()
@@ -240,6 +420,8 @@ class MainWindow(QMainWindow):
         size_range.addWidget(self.min_size)
         size_range.addWidget(QLabel("to MiB"))
         size_range.addWidget(self.max_size)
+        size_range.setStretch(0, 1)
+        size_range.setStretch(2, 1)
         filter_layout.addRow("Size", size_range)
 
         self.encrypted_filter = QComboBox()
@@ -252,54 +434,188 @@ class MainWindow(QMainWindow):
         self.text_filter.currentIndexChanged.connect(self._text_filter_changed)
         filter_layout.addRow("Text", self.text_filter)
 
-        layout.addLayout(filter_layout)
+        config_layout.addLayout(filter_layout)
+        config_scroll = QScrollArea()
+        config_scroll.setWidgetResizable(True)
+        config_scroll.setFrameShape(QScrollArea.NoFrame)
+        config_scroll.setWidget(config_panel)
+        top_splitter.addWidget(config_scroll)
+
+        llm_panel = QWidget()
+        llm_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        llm_panel.setMinimumWidth(260)
+        llm_panel.setStyleSheet(
+            "background-color: #fffbeb; color: #111111; border: 1px solid #fde68a; border-radius: 10px;"
+        )
+        llm_layout = QVBoxLayout(llm_panel)
+        llm_layout.setContentsMargins(10, 10, 10, 10)
+        llm_layout.setSpacing(10)
+        llm_header = self._section_header("LLM results")
+        llm_layout.addWidget(llm_header)
 
         ollama_layout = QFormLayout()
+        ollama_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        ollama_layout.setRowWrapPolicy(QFormLayout.WrapLongRows)
         self.ollama_base_url_input = QLineEdit(self.config.ollama_base_url)
+        self.ollama_base_url_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         ollama_layout.addRow("Ollama URL", self.ollama_base_url_input)
 
         model_row = QHBoxLayout()
         self.ollama_model_input = QLineEdit(self.config.ollama_model)
         self.ollama_model_input.setPlaceholderText("example: llama3.1:8b")
-        self.refresh_models_button = QPushButton("Refresh Models")
+        self.ollama_model_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.refresh_models_button = self._button("Models", QStyle.SP_BrowserReload)
+        self.refresh_models_button.setToolTip("Load local Ollama models")
         self.refresh_models_button.clicked.connect(self.refresh_ollama_models)
         model_row.addWidget(self.ollama_model_input)
         model_row.addWidget(self.refresh_models_button)
+        model_row.setStretch(0, 1)
         ollama_layout.addRow("Ollama Model", model_row)
+
+        generation_row = QHBoxLayout()
+        self.ollama_temperature_input = QDoubleSpinBox()
+        self.ollama_temperature_input.setRange(0.0, 2.0)
+        self.ollama_temperature_input.setDecimals(2)
+        self.ollama_temperature_input.setSingleStep(0.05)
+        self.ollama_temperature_input.setValue(self.config.ollama_temperature)
+        self.ollama_temperature_input.setToolTip("Lower values are more focused. Higher values are more creative.")
+        self.ollama_top_p_input = QDoubleSpinBox()
+        self.ollama_top_p_input.setRange(0.0, 1.0)
+        self.ollama_top_p_input.setDecimals(2)
+        self.ollama_top_p_input.setSingleStep(0.05)
+        self.ollama_top_p_input.setValue(self.config.ollama_top_p)
+        self.ollama_top_p_input.setToolTip("Limits token choices by probability mass.")
+        generation_row.addWidget(QLabel("Temp"))
+        generation_row.addWidget(self.ollama_temperature_input)
+        generation_row.addWidget(QLabel("Top-p"))
+        generation_row.addWidget(self.ollama_top_p_input)
+        generation_row.setStretch(1, 1)
+        generation_row.setStretch(3, 1)
+        ollama_layout.addRow("Generation", generation_row)
+
+        limits_row = QHBoxLayout()
+        self.ollama_top_k_input = QSpinBox()
+        self.ollama_top_k_input.setRange(0, 10_000)
+        self.ollama_top_k_input.setSpecialValueText("Auto")
+        self.ollama_top_k_input.setValue(self.config.ollama_top_k)
+        self.ollama_top_k_input.setToolTip("Limits token choices to the best ranked options. Auto lets Ollama decide.")
+        self.ollama_num_predict_input = QSpinBox()
+        self.ollama_num_predict_input.setRange(0, 100_000)
+        self.ollama_num_predict_input.setSpecialValueText("Auto")
+        self.ollama_num_predict_input.setValue(self.config.ollama_num_predict)
+        self.ollama_num_predict_input.setToolTip("Maximum generated tokens. Auto lets Ollama decide.")
+        limits_row.addWidget(QLabel("Top-k"))
+        limits_row.addWidget(self.ollama_top_k_input)
+        limits_row.addWidget(QLabel("Max tokens"))
+        limits_row.addWidget(self.ollama_num_predict_input)
+        limits_row.setStretch(1, 1)
+        limits_row.setStretch(3, 1)
+        ollama_layout.addRow("Limits", limits_row)
+
+        runtime_row = QHBoxLayout()
+        self.ollama_num_ctx_input = QSpinBox()
+        self.ollama_num_ctx_input.setRange(0, 1_000_000)
+        self.ollama_num_ctx_input.setSpecialValueText("Auto")
+        self.ollama_num_ctx_input.setValue(self.config.ollama_num_ctx)
+        self.ollama_num_ctx_input.setToolTip("Context window size. Auto lets Ollama decide.")
+        self.ollama_timeout_input = QSpinBox()
+        self.ollama_timeout_input.setRange(5, 3_600)
+        self.ollama_timeout_input.setSuffix(" sec")
+        self.ollama_timeout_input.setValue(self.config.ollama_timeout_seconds)
+        self.ollama_timeout_input.setToolTip("Maximum wait time for each Ollama request.")
+        runtime_row.addWidget(QLabel("Context"))
+        runtime_row.addWidget(self.ollama_num_ctx_input)
+        runtime_row.addWidget(QLabel("Timeout"))
+        runtime_row.addWidget(self.ollama_timeout_input)
+        runtime_row.setStretch(1, 1)
+        runtime_row.setStretch(3, 1)
+        ollama_layout.addRow("Runtime", runtime_row)
 
         self.prompt_input = QPlainTextEdit()
         self.prompt_input.setPlainText(self.config.extraction_prompt)
         self.prompt_input.setPlaceholderText(
             "Use placeholders such as {file_name}, {full_path}, {page_count}, {text}, and {documents}"
         )
-        self.prompt_input.setMaximumHeight(130)
-        ollama_layout.addRow("Extraction Prompt", self.prompt_input)
+        self.prompt_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.prompt_input.setMinimumHeight(180)
+        ollama_layout.addRow(self._section_header("Extraction prompt"))
 
         run_prompt_row = QHBoxLayout()
-        self.run_extraction_button = QPushButton("Run Prompt on Selected PDFs")
+        self.run_extraction_button = self._button("Run Selected", QStyle.SP_MediaPlay)
+        self.run_extraction_button.setToolTip("Run the prompt for selected PDFs")
         self.run_extraction_button.clicked.connect(self.run_ollama_extraction)
-        self.save_prompt_button = QPushButton("Save Prompt Settings")
+        self.save_prompt_button = self._button("Save", QStyle.SP_DialogSaveButton)
+        self.save_prompt_button.setToolTip("Save prompt and Ollama settings")
         self.save_prompt_button.clicked.connect(self._persist_ollama_settings)
+        self.reset_prompt_button = self._button("Reset", QStyle.SP_DialogResetButton)
+        self.reset_prompt_button.setToolTip("Restore the default prompt")
+        self.reset_prompt_button.clicked.connect(self._reset_prompt_to_default)
+        self.stop_ollama_button = self._button("Stop", QStyle.SP_MediaStop)
+        self.stop_ollama_button.setToolTip("Stop local extraction")
+        self.stop_ollama_button.clicked.connect(self.stop_ollama_extraction)
+        self.stop_ollama_button.setEnabled(False)
         run_prompt_row.addWidget(self.run_extraction_button)
         run_prompt_row.addWidget(self.save_prompt_button)
+        run_prompt_row.addWidget(self.reset_prompt_button)
+        run_prompt_row.addWidget(self.stop_ollama_button)
+        run_prompt_row.addStretch(1)
         ollama_layout.addRow("Local Extraction", run_prompt_row)
 
         self.extraction_progress_label = QLabel("No local extraction running.")
         ollama_layout.addRow("Extraction Progress", self.extraction_progress_label)
 
-        self.extraction_result_table = QTableWidget(0, 4)
-        self.extraction_result_table.setHorizontalHeaderLabels(["File", "Path", "Status", "Result / Error"])
+        self.extraction_elapsed_label = QLabel("0:00")
+        ollama_layout.addRow("Elapsed time", self.extraction_elapsed_label)
+
+        self.ollama_parameters_label = QLabel("Parameters: not used yet")
+        self.ollama_parameters_label.setWordWrap(True)
+        ollama_layout.addRow("Last settings", self.ollama_parameters_label)
+
+        self.extraction_result_table = QTableWidget(0, 5)
+        self.extraction_result_table.setHorizontalHeaderLabels(["File", "Path", "Status", "Result / Error", "Action"])
         self.extraction_result_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.extraction_result_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.extraction_result_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.extraction_result_table.setMinimumHeight(220)
+        self.extraction_result_table.doubleClicked.connect(lambda _: self.open_selected_extraction_pdf())
         self.extraction_result_table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        self.extraction_result_table.horizontalHeader().setStretchLastSection(True)
-        self.extraction_result_table.setMaximumHeight(180)
-        ollama_layout.addRow("Extraction Result", self.extraction_result_table)
+        self.extraction_result_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.extraction_result_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.extraction_result_table.horizontalHeader().setStretchLastSection(False)
 
-        layout.addLayout(ollama_layout)
+        llm_layout.addLayout(ollama_layout)
+
+        resize_hint = QLabel("Drag the LLM split handle to resize prompt and results.")
+        resize_hint.setStyleSheet("color: #4b5563; font-size: 11px;")
+        llm_layout.addWidget(resize_hint)
+
+        result_label = self._section_header("Extraction result")
+        llm_layout.addWidget(result_label)
+
+        llm_splitter = QSplitter(Qt.Vertical)
+        llm_splitter.setChildrenCollapsible(False)
+        llm_splitter.setOpaqueResize(True)
+        llm_splitter.setHandleWidth(8)
+        llm_splitter.addWidget(self.prompt_input)
+        llm_splitter.addWidget(self.extraction_result_table)
+        llm_splitter.setSizes([180, 260])
+        llm_layout.addWidget(llm_splitter)
+        llm_scroll = QScrollArea()
+        llm_scroll.setWidgetResizable(True)
+        llm_scroll.setFrameShape(QScrollArea.NoFrame)
+        llm_scroll.setWidget(llm_panel)
+        top_splitter.addWidget(llm_scroll)
+        top_splitter.setSizes([240, 280, 320])
+
+        vertical_splitter = QSplitter(Qt.Vertical)
+        vertical_splitter.setChildrenCollapsible(False)
+        vertical_splitter.setOpaqueResize(True)
+        vertical_splitter.setHandleWidth(10)
+        vertical_splitter.addWidget(top_splitter)
 
         self.table = QTableView()
         self.table.setModel(self.proxy)
+        self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.table.setSortingEnabled(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -307,10 +623,13 @@ class MainWindow(QMainWindow):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.verticalHeader().setVisible(False)
-        layout.addWidget(self.table, stretch=1)
+        vertical_splitter.addWidget(self.table)
+        vertical_splitter.setSizes([240, 460])
+
+        main_layout.addWidget(vertical_splitter)
 
         self.status = QLabel("Ready")
-        layout.addWidget(self.status)
+        main_layout.addWidget(self.status)
 
         self.setCentralWidget(central)
 
@@ -454,7 +773,7 @@ class MainWindow(QMainWindow):
         record = self._selected_record()
         if record is None:
             return
-        subprocess.run(["open", record.full_path], check=False)
+        self._open_pdf_path(record.full_path)
 
     @Slot()
     def reveal_selected_pdf(self) -> None:
@@ -462,6 +781,24 @@ class MainWindow(QMainWindow):
         if record is None:
             return
         subprocess.run(["open", "-R", record.full_path], check=False)
+
+    @Slot()
+    def open_selected_extraction_pdf(self) -> None:
+        path = self._selected_extraction_pdf_path()
+        if path:
+            self._open_pdf_path(path)
+
+    def _selected_extraction_pdf_path(self) -> str:
+        indexes = self.extraction_result_table.selectionModel().selectedRows()
+        if not indexes:
+            return ""
+        item = self.extraction_result_table.item(indexes[0].row(), 1)
+        return item.text() if item is not None else ""
+
+    def _open_pdf_path(self, path: str) -> None:
+        if not path:
+            return
+        subprocess.run(["open", path], check=False)
 
     @Slot()
     def export_current_view(self) -> None:
@@ -500,9 +837,9 @@ class MainWindow(QMainWindow):
     def run_ollama_extraction(self) -> None:
         records = self._selected_records()
         if not records:
-            QMessageBox.information(self, "No PDF selected", "Select one to ten PDF rows first.")
+            QMessageBox.information(self, "No PDF selected", "Select one or more PDF rows first.")
             return
-        if len(records) > MAX_PROMPT_FILES:
+        if MAX_PROMPT_FILES and len(records) > MAX_PROMPT_FILES:
             QMessageBox.information(
                 self,
                 "Too many PDFs selected",
@@ -520,14 +857,23 @@ class MainWindow(QMainWindow):
         self.extraction_progress_label.setText(
             f"Running local Ollama extraction for {len(records)} selected PDF(s)..."
         )
+        self.extraction_elapsed_label.setText("0:00")
         self.status.setText(f"Ollama extraction running: 0/{len(records)}")
         self.run_extraction_button.setEnabled(False)
+        self.stop_ollama_button.setEnabled(True)
+        self.ollama_stop_event = Event()
+        self.ollama_start_time = time.monotonic()
+        self.ollama_last_progress_text = "Starting Ollama extraction..."
+        self.ollama_timer.start()
         self.ollama_thread = QThread(self)
         self.ollama_worker = OllamaExtractionWorker(
             records=records,
             model=self.config.ollama_model,
             base_url=self.config.ollama_base_url,
+            timeout_seconds=self.config.ollama_timeout_seconds,
+            options=self._ollama_options(),
             prompt_template=self.config.extraction_prompt,
+            stop_event=self.ollama_stop_event,
         )
         self.ollama_worker.moveToThread(self.ollama_thread)
         self.ollama_thread.started.connect(self.ollama_worker.run)
@@ -544,25 +890,58 @@ class MainWindow(QMainWindow):
 
     @Slot(int, int, str)
     def _ollama_extraction_progress(self, current: int, total: int, file_name: str) -> None:
-        message = f"Ollama extraction running: {current}/{total} - {file_name}"
+        self.ollama_last_progress_text = f"Ollama extraction running: {current}/{total} - {file_name}"
+        message = self.ollama_last_progress_text
         self.status.setText(message)
-        self.extraction_progress_label.setText(message + " | The app is still working.")
+        self.extraction_progress_label.setText(message + ". The app is still working.")
 
     @Slot(object)
     def _ollama_extraction_finished(self, results: object) -> None:
+        self.ollama_timer.stop()
         self._set_extraction_results(results if isinstance(results, list) else [])
-        self.extraction_progress_label.setText("Ollama extraction complete")
+        elapsed = self._format_elapsed(time.monotonic() - (self.ollama_start_time or time.monotonic()))
+        finished_text = "Ollama extraction stopped" if self.ollama_stop_event and self.ollama_stop_event.is_set() else "Ollama extraction complete"
+        self.extraction_progress_label.setText(f"{finished_text} in {elapsed}")
+        self.ollama_parameters_label.setText("Parameters: " + self._ollama_settings_summary())
         self.run_extraction_button.setEnabled(True)
-        self.status.setText("Ollama extraction complete")
+        self.stop_ollama_button.setEnabled(False)
+        self.status.setText(f"{finished_text} in {elapsed}")
 
     @Slot(str)
     def _ollama_extraction_failed(self, message: str) -> None:
+        self.ollama_timer.stop()
+        elapsed = self._format_elapsed(time.monotonic() - (self.ollama_start_time or time.monotonic()))
         self._set_extraction_results(
             [{"file_name": "", "full_path": "", "status": "error", "result": "Ollama extraction failed: " + message}]
         )
-        self.extraction_progress_label.setText("Ollama extraction failed")
+        self.extraction_progress_label.setText(f"Ollama extraction failed after {elapsed}")
         self.run_extraction_button.setEnabled(True)
-        self.status.setText("Ollama extraction failed")
+        self.stop_ollama_button.setEnabled(False)
+        self.status.setText(f"Ollama extraction failed after {elapsed}")
+
+    @Slot()
+    def stop_ollama_extraction(self) -> None:
+        if self.ollama_stop_event is None:
+            return
+        self.ollama_stop_event.set()
+        self.stop_ollama_button.setEnabled(False)
+        self.status.setText("Stopping Ollama extraction...")
+        self.extraction_progress_label.setText("Stopping Ollama extraction...")
+
+    def _ollama_timer_tick(self) -> None:
+        if self.ollama_start_time is None:
+            return
+        self._update_ollama_timer_label()
+
+    def _update_ollama_timer_label(self) -> None:
+        elapsed = self._format_elapsed(time.monotonic() - (self.ollama_start_time or time.monotonic()))
+        self.extraction_elapsed_label.setText(elapsed)
+
+    @staticmethod
+    def _format_elapsed(seconds: float) -> str:
+        minutes = int(seconds) // 60
+        secs = int(seconds) % 60
+        return f"{minutes}:{secs:02d}"
 
     @Slot()
     def _ollama_thread_deleted(self) -> None:
@@ -591,8 +970,18 @@ class MainWindow(QMainWindow):
                 row_data.get("result", ""),
             ]
             for column, value in enumerate(values):
-                self.extraction_result_table.setItem(row, column, QTableWidgetItem(value))
+                item = QTableWidgetItem(value)
+                item.setForeground(QColor("#0f172a"))
+                item.setBackground(QColor("#ffffff"))
+                self.extraction_result_table.setItem(row, column, item)
+            path = row_data.get("full_path", "")
+            open_button = self._button("Open", QStyle.SP_FileIcon)
+            open_button.setToolTip("Open this PDF")
+            open_button.setEnabled(bool(path))
+            open_button.clicked.connect(lambda checked=False, pdf_path=path: self._open_pdf_path(pdf_path))
+            self.extraction_result_table.setCellWidget(row, 4, open_button)
         self.extraction_result_table.resizeColumnsToContents()
+        self.extraction_result_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
 
     def _folder_filter_changed(self, value: str) -> None:
         self.proxy.set_folder("" if value == "All folders" else value)
@@ -661,8 +1050,43 @@ class MainWindow(QMainWindow):
     def _persist_ollama_settings(self) -> None:
         self.config.ollama_base_url = self.ollama_base_url_input.text().strip() or "http://localhost:11434"
         self.config.ollama_model = self.ollama_model_input.text().strip()
+        self.config.ollama_temperature = self.ollama_temperature_input.value()
+        self.config.ollama_top_p = self.ollama_top_p_input.value()
+        self.config.ollama_top_k = self.ollama_top_k_input.value()
+        self.config.ollama_num_predict = self.ollama_num_predict_input.value()
+        self.config.ollama_num_ctx = self.ollama_num_ctx_input.value()
+        self.config.ollama_timeout_seconds = self.ollama_timeout_input.value()
         self.config.extraction_prompt = self.prompt_input.toPlainText()
         self.config.save()
+
+    def _ollama_options(self) -> dict[str, float | int]:
+        options: dict[str, float | int] = {
+            "temperature": self.config.ollama_temperature,
+            "top_p": self.config.ollama_top_p,
+        }
+        if self.config.ollama_top_k > 0:
+            options["top_k"] = self.config.ollama_top_k
+        if self.config.ollama_num_predict > 0:
+            options["num_predict"] = self.config.ollama_num_predict
+        if self.config.ollama_num_ctx > 0:
+            options["num_ctx"] = self.config.ollama_num_ctx
+        return options
+
+    def _ollama_settings_summary(self) -> str:
+        top_k = str(self.config.ollama_top_k) if self.config.ollama_top_k > 0 else "Auto"
+        max_tokens = str(self.config.ollama_num_predict) if self.config.ollama_num_predict > 0 else "Auto"
+        context = str(self.config.ollama_num_ctx) if self.config.ollama_num_ctx > 0 else "Auto"
+        return (
+            f"model {self.config.ollama_model or 'none'}, "
+            f"temperature {self.config.ollama_temperature:.2f}, "
+            f"top-p {self.config.ollama_top_p:.2f}, "
+            f"top-k {top_k}, max tokens {max_tokens}, context {context}, "
+            f"timeout {self.config.ollama_timeout_seconds}s"
+        )
+
+    def _reset_prompt_to_default(self) -> None:
+        self.prompt_input.setPlainText(DEFAULT_EXTRACTION_PROMPT)
+        self.status.setText("Extraction prompt reset to default.")
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         if self.scan_thread is not None:

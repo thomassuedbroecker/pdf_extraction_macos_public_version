@@ -1,0 +1,234 @@
+Metadata-Version: 2.4
+Name: pdf-manager
+Version: 0.1.0
+Summary: Offline macOS desktop app for scanning, filtering, inspecting, and exporting PDF metadata.
+Author: Local PDF Tools
+License: MIT
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: PySide6-Essentials>=6.7
+Requires-Dist: pypdf>=4.2
+Requires-Dist: openpyxl>=3.1
+Requires-Dist: platformdirs>=4.2
+Provides-Extra: test
+Requires-Dist: pytest>=8.0; extra == "test"
+Dynamic: license-file
+
+# PDF Manager
+
+PDF Manager is a local-first macOS desktop application for scanning selected folders for PDF files, inspecting core PDF metadata, filtering and sorting the results, and exporting the current table view to Excel.
+
+The first version is fully offline. It does not use cloud services, proprietary APIs, or paid dependencies.
+
+## Setup
+
+Requires Python 3.12 or newer.
+
+```bash
+cd /path/to/pdf_extraction
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[test]"
+```
+
+## Run
+
+Run from the project root after installing the editable package:
+
+```bash
+python -m pdf_manager.app
+```
+
+Or, after installation:
+
+```bash
+pdf-manager
+```
+
+If you see `ModuleNotFoundError: No module named 'pdf_manager'`, either run the command from the repository root or activate the virtual environment where `python -m pip install -e ".[test]"` was executed.
+
+## Features
+
+- Select one or more folders.
+- Add multiple folders by using the folder picker repeatedly.
+- Recursively scan for `.pdf` files.
+- Start, stop, and refresh scans.
+- Extract file name, path, folder, size, created and modified dates, page count, title, author, subject, producer, encryption state, text extraction state, and a short first-page preview when possible.
+- Sort columns in the table.
+- Filter by search text, folder, page range, file size range, encryption state, and text extraction state.
+- Open the selected PDF in the default macOS viewer.
+- Reveal the selected PDF in Finder.
+- Export the current filtered table view to `.xlsx`.
+- Persist last selected folders, last export location, and visible columns in a local JSON config file.
+- Log technical errors to the user log directory.
+
+## Dependencies
+
+- `PySide6-Essentials`: Qt desktop UI modules used by the app. The code imports the normal `PySide6` namespace, including `PySide6.QtWidgets`, `PySide6.QtCore`, and related essentials modules.
+- `pypdf`: PDF metadata, page count, encryption detection, and lightweight text preview.
+- `openpyxl`: Excel `.xlsx` export.
+- `platformdirs`: macOS-compatible config and log paths.
+- `pytest`: tests, installed through the optional `test` extra.
+
+## PDF Library Choice
+
+This version uses `pypdf`. It is open source, pure Python, easy to install, works offline, and covers the version 1 requirements: metadata extraction, page count, encryption detection, and lightweight text extraction from the first page. It avoids native binary dependencies, which keeps the initial macOS setup simpler than a PyMuPDF-based first version.
+
+Known tradeoff: `pypdf` text extraction is best-effort. Scanned image PDFs and some complex layouts may not produce useful preview text. The app records this as `text_extractable = false` or stores a per-file error instead of crashing.
+
+## Architecture
+
+```text
+pdf_manager/
+  app.py
+  ui/
+    main_window.py
+    table_model.py
+  core/
+    scanner.py
+    pdf_metadata.py
+    export_excel.py
+    config.py
+  integrations/
+    ollama_client.py
+    docling_adapter.py
+    agent_interface.py
+  models/
+    pdf_record.py
+tests/
+  unit/
+  ui/
+  conftest.py
+```
+
+The `models` package contains the UI-independent `PdfRecord` data class. The `core` package handles scanning, metadata extraction, Excel export, config, and logging. The `ui` package contains PySide6 table and window code. Scanning runs in a background Qt thread so the UI remains responsive.
+
+The app handles corrupt, encrypted, permission-denied, and unreadable files by creating records with an `error` value and logging details locally.
+
+### Local Files
+
+Runtime settings are saved with `platformdirs.user_config_dir("PDF Manager", "Local PDF Tools")` in a `config.json` file. On macOS this resolves under the user's local Application Support area.
+
+Technical logs are written with `platformdirs.user_log_dir("PDF Manager", "Local PDF Tools")` to `pdf_manager.log`.
+
+The app does not write scan results automatically. Excel files are only created when the user chooses `Export XLSX`.
+
+## Future Extension Points
+
+The `integrations` package contains placeholders that are not required at runtime:
+
+- `OllamaClient.list_models()`
+- `OllamaClient.generate_summary(text, model)`
+- `DoclingAdapter.extract_document_structure(path)`
+- `AgentInterface.inspect_pdf(record)`
+
+These boundaries are intentionally separate from the UI and scanner so later local LLM, Docling, or agent workflows can consume `PdfRecord` objects without changing the table model or export code.
+
+## Testing
+
+### Test Strategy
+
+The test setup separates fast unit tests from UI-related tests.
+
+Unit tests validate core logic and must not depend on the UI. They cover folder scanning, PDF metadata extraction, invalid PDF handling, Excel export, and local config persistence.
+
+UI tests validate table model behavior and basic window creation. They do not open Finder, do not open real PDFs, do not require manual interaction, and are marked with `ui` so they can be run separately or excluded. UI tests may be skipped in headless environments if Qt cannot create an offscreen application.
+
+Optional slow or integration-like tests should use the `slow` marker when added. The current test setup does not perform LLM, Ollama, agent, or Docling processing unless those integrations are implemented later.
+
+### Test Structure
+
+```text
+tests/
+  unit/
+    test_scanner.py
+    test_pdf_metadata.py
+    test_export_excel.py
+    test_config.py
+  ui/
+    test_table_model.py
+    test_main_window_smoke.py
+  conftest.py
+```
+
+### Test Cases
+
+| Test case | Test type | File | Reason |
+|---|---|---|---|
+| `test_scanner_finds_pdf_files_recursively` | Unit | `tests/unit/test_scanner.py` | Verifies that the scanner can find PDF files in nested folders. |
+| `test_scanner_ignores_non_pdf_files` | Unit | `tests/unit/test_scanner.py` | Ensures that unrelated files are not included in the PDF result list. |
+| `test_scanner_handles_empty_folder` | Unit | `tests/unit/test_scanner.py` | Ensures that scanning an empty folder returns an empty result without error. |
+| `test_scanner_handles_permission_or_missing_folder_gracefully` | Unit | `tests/unit/test_scanner.py` | Ensures that invalid or inaccessible folders do not crash the application. |
+| `test_pdf_metadata_extracts_basic_fields` | Unit | `tests/unit/test_pdf_metadata.py` | Verifies that page count, file name, path, size, and dates are extracted correctly. |
+| `test_pdf_metadata_detects_invalid_pdf` | Unit | `tests/unit/test_pdf_metadata.py` | Ensures that corrupt or invalid PDF files are reported with an error field instead of crashing. |
+| `test_pdf_metadata_detects_encrypted_pdf_if_supported` | Unit | `tests/unit/test_pdf_metadata.py` | Verifies that encrypted PDFs are identified when the selected PDF library supports it. |
+| `test_pdf_metadata_extracts_text_preview_when_available` | Unit | `tests/unit/test_pdf_metadata.py` | Ensures that the first-page preview works for text-based PDFs. |
+| `test_export_excel_creates_xlsx_file` | Unit | `tests/unit/test_export_excel.py` | Verifies that the export function creates a valid `.xlsx` file. |
+| `test_export_excel_contains_expected_headers` | Unit | `tests/unit/test_export_excel.py` | Ensures that the exported Excel file contains the documented columns. |
+| `test_export_excel_exports_filtered_records_only` | Unit | `tests/unit/test_export_excel.py` | Ensures that the export respects the currently visible or filtered result set. |
+| `test_export_excel_adds_metadata_sheet` | Unit | `tests/unit/test_export_excel.py` | Verifies that export date and scanned root folders are included in the workbook. |
+| `test_config_saves_and_loads_user_settings` | Unit | `tests/unit/test_config.py` | Ensures that selected folders, export location, and visible columns are persisted locally. |
+| `test_config_uses_platformdirs_application_path` | Unit | `tests/unit/test_config.py` | Ensures that configuration is stored in the correct local application-support path. |
+| `test_config_handles_missing_config_file` | Unit | `tests/unit/test_config.py` | Ensures that the application can start with default settings when no config file exists. |
+| `test_table_model_exposes_pdf_records` | UI | `tests/ui/test_table_model.py` | Verifies that the UI table model maps `PdfRecord` objects to table rows and columns correctly. |
+| `test_table_model_sorts_records_by_column` | UI | `tests/ui/test_table_model.py` | Ensures that sorting works at the table model level without launching the full application window. |
+| `test_table_model_filters_records` | UI | `tests/ui/test_table_model.py` | Ensures that search or filter logic works independently from the visible UI. |
+| `test_main_window_can_be_created` | UI | `tests/ui/test_main_window_smoke.py` | Verifies that the main window can be instantiated without starting the full application workflow. |
+
+### Running Tests
+
+```bash
+pytest
+pytest tests/unit -m unit
+pytest tests/ui -m ui
+pytest -m "not ui"
+pytest tests/unit/test_pdf_metadata.py
+pytest tests/unit/test_pdf_metadata.py::test_pdf_metadata_extracts_basic_fields
+```
+
+When using the documented virtual environment:
+
+```bash
+.venv/bin/python -m pytest
+```
+
+### Test Coverage Scope
+
+Covered:
+
+- Folder scanning.
+- PDF metadata extraction.
+- Invalid PDF handling.
+- Excel export.
+- Config persistence.
+- Table model behavior.
+- Main window smoke test.
+
+Not yet covered:
+
+- Real LLM inspection.
+- Ollama integration.
+- Docling extraction.
+- Agent workflow execution.
+- Large-scale performance benchmarking.
+- Packaged macOS application testing.
+
+### Quality Expectations
+
+All tests have clear names that describe expected behavior. Tests are deterministic, do not rely on the user’s real documents, do not scan the user’s home directory, do not require internet access, and do not require cloud services. Tests should pass on a clean checkout after installing dependencies.
+
+Latest local verification in this workspace:
+
+- `.venv/bin/python -m pytest tests/unit -m unit`: `15 passed`
+- `.venv/bin/python -m pytest tests/ui -m ui`: `4 passed`
+- `.venv/bin/python -m pytest`: `19 passed`
+
+## Known Limitations
+
+- Multi-folder selection is implemented by adding folders one at a time with the folder chooser.
+- Visible column configuration is persisted, but the first UI version does not include a column chooser.
+- Text preview is best-effort and limited to the first page.
+- Password-protected PDFs are detected but not decrypted unless an empty password works.
+- Creation date uses filesystem metadata exposed by macOS/Python, not PDF-internal creation metadata.

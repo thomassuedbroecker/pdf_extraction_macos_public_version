@@ -30,16 +30,19 @@ class OllamaClient:
         """Generate a local summary using the default prompt style."""
         return self.generate(prompt=text, model=model)
 
-    def generate(self, prompt: str, model: str) -> str:
+    def generate(self, prompt: str, model: str, options: dict[str, Any] | None = None) -> str:
         """Generate a response from a local model with streaming disabled."""
+        body: dict[str, Any] = {
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+        }
+        if options:
+            body["options"] = options
         payload = self._request(
             "POST",
             "/api/generate",
-            {
-                "model": model,
-                "prompt": prompt,
-                "stream": False,
-            },
+            body,
         )
         return str(payload.get("response", "")).strip()
 

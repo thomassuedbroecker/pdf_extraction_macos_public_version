@@ -52,3 +52,22 @@ def test_ollama_client_generates_with_streaming_disabled(monkeypatch: pytest.Mon
     assert body["model"] == "llama3.1:8b"
     assert body["prompt"] == "Extract this"
     assert body["stream"] is False
+
+
+def test_ollama_client_generates_with_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured_body = io.BytesIO()
+
+    def fake_urlopen(request, timeout):
+        captured_body.write(request.data)
+        return FakeResponse({"response": "structured extraction"})
+
+    monkeypatch.setattr("pdf_manager.integrations.ollama_client.urlopen", fake_urlopen)
+
+    OllamaClient().generate(
+        prompt="Extract this",
+        model="llama3.1:8b",
+        options={"temperature": 0.2, "top_p": 0.9, "num_predict": 1024},
+    )
+
+    body = json.loads(captured_body.getvalue().decode("utf-8"))
+    assert body["options"] == {"temperature": 0.2, "top_p": 0.9, "num_predict": 1024}
