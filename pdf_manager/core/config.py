@@ -50,6 +50,7 @@ class AppConfig:
     ollama_num_predict: int = 1024
     ollama_num_ctx: int = 4096
     ollama_timeout_seconds: int = 120
+    extraction_backend: str = "pypdf"
     extraction_prompt: str = DEFAULT_EXTRACTION_PROMPT
 
     @staticmethod
@@ -77,6 +78,7 @@ class AppConfig:
                 ollama_num_predict=int(payload.get("ollama_num_predict", 1024)),
                 ollama_num_ctx=int(payload.get("ollama_num_ctx", 4096)),
                 ollama_timeout_seconds=int(payload.get("ollama_timeout_seconds", 120)),
+                extraction_backend=str(payload.get("extraction_backend", "pypdf")),
                 extraction_prompt=str(payload.get("extraction_prompt", DEFAULT_EXTRACTION_PROMPT)),
             )
         except (OSError, json.JSONDecodeError, TypeError) as exc:
@@ -99,6 +101,7 @@ class AppConfig:
             "ollama_num_predict": self.ollama_num_predict,
             "ollama_num_ctx": self.ollama_num_ctx,
             "ollama_timeout_seconds": self.ollama_timeout_seconds,
+            "extraction_backend": self.extraction_backend,
             "extraction_prompt": self.extraction_prompt,
         }
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")

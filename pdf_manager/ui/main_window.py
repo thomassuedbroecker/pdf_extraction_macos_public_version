@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QRadioButton,
     QPlainTextEdit,
     QScrollArea,
     QSplitter,
@@ -43,6 +44,7 @@ from pdf_manager.core.export_excel import export_records_to_excel
 from pdf_manager.core.pdf_text import extract_pdf_text
 from pdf_manager.core.prompts import DEFAULT_EXTRACTION_PROMPT, render_prompt
 from pdf_manager.core.scanner import PdfScanner
+from pdf_manager.integrations.docling_adapter import DoclingAdapter, is_docling_available
 from pdf_manager.integrations.ollama_client import OllamaClient
 from pdf_manager.models.pdf_record import PdfRecord
 from pdf_manager.ui.distribution_chart import DistributionChartWidget
@@ -99,6 +101,7 @@ class OllamaExtractionWorker(QObject):
         base_url: str,
         timeout_seconds: int,
         options: dict[str, float | int],
+        extraction_backend: str,
         prompt_template: str,
         stop_event: Event,
     ) -> None:
@@ -108,6 +111,7 @@ class OllamaExtractionWorker(QObject):
         self.base_url = base_url
         self.timeout_seconds = timeout_seconds
         self.options = options
+        self.extraction_backend = extraction_backend
         self.prompt_template = prompt_template
         self.stop_event = stop_event
 
@@ -122,7 +126,7 @@ class OllamaExtractionWorker(QObject):
                     break
                 self.progress.emit(current, total, record.file_name)
                 try:
-                    text = extract_pdf_text(record.full_path)
+                    text = self._extract_text(record.full_path)
                     if self.stop_event.is_set():
                         break
                     if not text.strip():
@@ -138,6 +142,11 @@ class OllamaExtractionWorker(QObject):
         except Exception as exc:
             LOGGER.exception("Ollama extraction failed")
             self.failed.emit(str(exc))
+
+    def _extract_text(self, path: str) -> str:
+        if self.extraction_backend == "docling":
+            return DoclingAdapter().extract_text(path)
+        return extract_pdf_text(path)
 
 
 def _extraction_result_row(record: PdfRecord, status: str, result: str) -> dict[str, str]:
@@ -168,6 +177,7 @@ class MainWindow(QMainWindow):
         self.ollama_timer.setInterval(500)
         self.ollama_start_time: float | None = None
         self.ollama_last_progress_text = ""
+        self.latest_extraction_pdf_path = ""
 
         self.model = PdfTableModel(config.visible_columns or DEFAULT_COLUMNS.copy())
         self.proxy = PdfFilterProxyModel()
@@ -370,6 +380,21 @@ class MainWindow(QMainWindow):
         config_layout.addWidget(self.folder_label)
         config_layout.addWidget(self.scan_summary_label)
 
+        folder_manage_row = QHBoxLayout()
+        self.selected_folder_input = QComboBox()
+        self.selected_folder_input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.selected_folder_input.setToolTip("Selected folders used by Start Scan")
+        self.add_folder_button = self._button("Add", QStyle.SP_DirOpenIcon)
+        self.add_folder_button.setToolTip("Add a folder to scan")
+        self.add_folder_button.clicked.connect(self.choose_folders)
+        self.remove_folder_button = self._button("Remove", QStyle.SP_TrashIcon)
+        self.remove_folder_button.setToolTip("Remove the selected folder from the scan list")
+        self.remove_folder_button.clicked.connect(self.remove_selected_folder)
+        folder_manage_row.addWidget(self.selected_folder_input, 1)
+        folder_manage_row.addWidget(self.add_folder_button)
+        folder_manage_row.addWidget(self.remove_folder_button)
+        config_layout.addLayout(folder_manage_row)
+
         self.refresh_section_button = self._button("Refresh", QStyle.SP_BrowserReload)
         self.refresh_section_button.setToolTip("Run the last scan again")
         self.refresh_section_button.clicked.connect(self.refresh_scan)
@@ -531,6 +556,35 @@ class MainWindow(QMainWindow):
         runtime_row.setStretch(3, 1)
         ollama_layout.addRow("Runtime", runtime_row)
 
+        backend_row = QHBoxLayout()
+        self.pypdf_backend_option = QRadioButton("Default pypdf")
+        self.pypdf_backend_option.setToolTip("Fast built-in PDF text extraction.")
+        self.docling_backend_option = QRadioButton("Docling slower")
+        self.docling_backend_option.setToolTip("Structured Docling extraction. This can take more time per PDF.")
+        if self.config.extraction_backend == "docling":
+            self.docling_backend_option.setChecked(True)
+        else:
+            self.pypdf_backend_option.setChecked(True)
+        self.pypdf_backend_option.toggled.connect(self._extraction_backend_changed)
+        self.docling_backend_option.toggled.connect(self._extraction_backend_changed)
+        backend_row.addWidget(self.pypdf_backend_option)
+        backend_row.addWidget(self.docling_backend_option)
+        backend_row.addStretch(1)
+        ollama_layout.addRow("PDF text", backend_row)
+
+        self.docling_warning_label = QLabel(
+            "Docling can take significantly more time per PDF because it performs structured document conversion."
+        )
+        self.docling_warning_label.setWordWrap(True)
+        self.docling_warning_label.setStyleSheet("color: #92400e; font-size: 11px;")
+        self.docling_warning_label.setVisible(self._selected_extraction_backend() == "docling")
+        ollama_layout.addRow("", self.docling_warning_label)
+
+        self.docling_availability_label = QLabel()
+        self.docling_availability_label.setWordWrap(True)
+        self._update_docling_availability_label()
+        ollama_layout.addRow("", self.docling_availability_label)
+
         self.prompt_input = QPlainTextEdit()
         self.prompt_input.setPlainText(self.config.extraction_prompt)
         self.prompt_input.setPlaceholderText(
@@ -570,6 +624,17 @@ class MainWindow(QMainWindow):
         self.ollama_parameters_label = QLabel("Parameters: not used yet")
         self.ollama_parameters_label.setWordWrap(True)
         ollama_layout.addRow("Last settings", self.ollama_parameters_label)
+
+        latest_pdf_row = QHBoxLayout()
+        self.latest_extraction_pdf_label = QLabel("No extracted PDF available.")
+        self.latest_extraction_pdf_label.setWordWrap(True)
+        self.open_latest_extraction_pdf_button = self._button("Open latest PDF", QStyle.SP_FileIcon)
+        self.open_latest_extraction_pdf_button.setToolTip("Open the latest PDF from the extraction results")
+        self.open_latest_extraction_pdf_button.setEnabled(False)
+        self.open_latest_extraction_pdf_button.clicked.connect(self.open_latest_extraction_pdf)
+        latest_pdf_row.addWidget(self.latest_extraction_pdf_label, 1)
+        latest_pdf_row.addWidget(self.open_latest_extraction_pdf_button)
+        ollama_layout.addRow("Extracted PDF", latest_pdf_row)
 
         self.extraction_result_table = QTableWidget(0, 5)
         self.extraction_result_table.setHorizontalHeaderLabels(["File", "Path", "Status", "Result / Error", "Action"])
@@ -647,6 +712,18 @@ class MainWindow(QMainWindow):
             self._persist_folders()
             self._update_folder_label()
             self._update_scan_summary()
+
+    @Slot()
+    def remove_selected_folder(self) -> None:
+        folder = self.selected_folder_input.currentData()
+        if not folder:
+            return
+        self.selected_folders = [path for path in self.selected_folders if path != folder]
+        if self.current_scan_roots == [folder] or folder in self.current_scan_roots:
+            self.current_scan_roots = [path for path in self.current_scan_roots if path != folder]
+        self._persist_folders()
+        self._update_folder_label()
+        self._update_scan_summary()
 
     @Slot()
     def start_scan(self) -> None:
@@ -788,6 +865,11 @@ class MainWindow(QMainWindow):
         if path:
             self._open_pdf_path(path)
 
+    @Slot()
+    def open_latest_extraction_pdf(self) -> None:
+        if self.latest_extraction_pdf_path:
+            self._open_pdf_path(self.latest_extraction_pdf_path)
+
     def _selected_extraction_pdf_path(self) -> str:
         indexes = self.extraction_result_table.selectionModel().selectedRows()
         if not indexes:
@@ -872,6 +954,7 @@ class MainWindow(QMainWindow):
             base_url=self.config.ollama_base_url,
             timeout_seconds=self.config.ollama_timeout_seconds,
             options=self._ollama_options(),
+            extraction_backend=self.config.extraction_backend,
             prompt_template=self.config.extraction_prompt,
             stop_event=self.ollama_stop_event,
         )
@@ -960,6 +1043,9 @@ class MainWindow(QMainWindow):
 
     def _set_extraction_results(self, results: list[dict[str, str]]) -> None:
         self.extraction_result_table.setRowCount(0)
+        latest_pdf_row = -1
+        latest_pdf_name = ""
+        latest_pdf_path = ""
         for row_data in results:
             row = self.extraction_result_table.rowCount()
             self.extraction_result_table.insertRow(row)
@@ -975,6 +1061,10 @@ class MainWindow(QMainWindow):
                 item.setBackground(QColor("#ffffff"))
                 self.extraction_result_table.setItem(row, column, item)
             path = row_data.get("full_path", "")
+            if path:
+                latest_pdf_row = row
+                latest_pdf_name = row_data.get("file_name", "") or Path(path).name
+                latest_pdf_path = path
             open_button = self._button("Open", QStyle.SP_FileIcon)
             open_button.setToolTip("Open this PDF")
             open_button.setEnabled(bool(path))
@@ -982,6 +1072,18 @@ class MainWindow(QMainWindow):
             self.extraction_result_table.setCellWidget(row, 4, open_button)
         self.extraction_result_table.resizeColumnsToContents()
         self.extraction_result_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self._set_latest_extraction_pdf(latest_pdf_name, latest_pdf_path)
+        if latest_pdf_row >= 0:
+            self.extraction_result_table.selectRow(latest_pdf_row)
+            self.extraction_result_table.scrollToItem(self.extraction_result_table.item(latest_pdf_row, 0))
+
+    def _set_latest_extraction_pdf(self, file_name: str, path: str) -> None:
+        self.latest_extraction_pdf_path = path
+        self.open_latest_extraction_pdf_button.setEnabled(bool(path))
+        if path:
+            self.latest_extraction_pdf_label.setText(file_name or Path(path).name)
+        else:
+            self.latest_extraction_pdf_label.setText("No extracted PDF available.")
 
     def _folder_filter_changed(self, value: str) -> None:
         self.proxy.set_folder("" if value == "All folders" else value)
@@ -1007,6 +1109,26 @@ class MainWindow(QMainWindow):
         self.proxy.set_text_extractable_filter(None if index == 0 else index == 1)
         self._update_scan_summary()
 
+    def _extraction_backend_changed(self) -> None:
+        is_docling = self._selected_extraction_backend() == "docling"
+        self.docling_warning_label.setVisible(is_docling)
+        self._update_docling_availability_label()
+        if is_docling:
+            self.status.setText("Docling extraction selected. PDF extraction can take more time.")
+
+    def _update_docling_availability_label(self) -> None:
+        is_docling = self._selected_extraction_backend() == "docling"
+        available = is_docling_available()
+        self.docling_availability_label.setVisible(is_docling or not available)
+        if available:
+            self.docling_availability_label.setText("Docling is installed and available.")
+            self.docling_availability_label.setStyleSheet("color: #166534; font-size: 11px;")
+        else:
+            self.docling_availability_label.setText(
+                'Docling is not installed. Install it with: python -m pip install -e ".[docling,test]"'
+            )
+            self.docling_availability_label.setStyleSheet("color: #991b1b; font-size: 11px;")
+
     def _update_folder_filter_options(self) -> None:
         current = self.folder_filter.currentText() if hasattr(self, "folder_filter") else "All folders"
         folders = sorted({record.parent_folder for record in self.model.records})
@@ -1024,7 +1146,23 @@ class MainWindow(QMainWindow):
         else:
             selected = "none"
         self.folder_label.setText(f"Selected folders: {selected} | Current scan scope: {self._scan_scope_label()}")
+        self._update_selected_folder_options()
         self._update_scan_summary()
+
+    def _update_selected_folder_options(self) -> None:
+        if not hasattr(self, "selected_folder_input"):
+            return
+        current = self.selected_folder_input.currentData()
+        self.selected_folder_input.blockSignals(True)
+        self.selected_folder_input.clear()
+        for folder in self.selected_folders:
+            self.selected_folder_input.addItem(folder, folder)
+        if current in self.selected_folders:
+            self.selected_folder_input.setCurrentIndex(self.selected_folders.index(current))
+        self.selected_folder_input.blockSignals(False)
+        has_folders = bool(self.selected_folders)
+        self.selected_folder_input.setEnabled(has_folders)
+        self.remove_folder_button.setEnabled(has_folders)
 
     def _update_scan_summary(self) -> None:
         found_count = self.model.rowCount()
@@ -1056,8 +1194,14 @@ class MainWindow(QMainWindow):
         self.config.ollama_num_predict = self.ollama_num_predict_input.value()
         self.config.ollama_num_ctx = self.ollama_num_ctx_input.value()
         self.config.ollama_timeout_seconds = self.ollama_timeout_input.value()
+        self.config.extraction_backend = self._selected_extraction_backend()
         self.config.extraction_prompt = self.prompt_input.toPlainText()
         self.config.save()
+
+    def _selected_extraction_backend(self) -> str:
+        if self.docling_backend_option.isChecked():
+            return "docling"
+        return "pypdf"
 
     def _ollama_options(self) -> dict[str, float | int]:
         options: dict[str, float | int] = {
@@ -1078,11 +1222,18 @@ class MainWindow(QMainWindow):
         context = str(self.config.ollama_num_ctx) if self.config.ollama_num_ctx > 0 else "Auto"
         return (
             f"model {self.config.ollama_model or 'none'}, "
+            f"PDF text {self._extraction_backend_label(self.config.extraction_backend)}, "
             f"temperature {self.config.ollama_temperature:.2f}, "
             f"top-p {self.config.ollama_top_p:.2f}, "
             f"top-k {top_k}, max tokens {max_tokens}, context {context}, "
             f"timeout {self.config.ollama_timeout_seconds}s"
         )
+
+    @staticmethod
+    def _extraction_backend_label(value: str) -> str:
+        if value == "docling":
+            return "Docling"
+        return "pypdf"
 
     def _reset_prompt_to_default(self) -> None:
         self.prompt_input.setPlainText(DEFAULT_EXTRACTION_PROMPT)

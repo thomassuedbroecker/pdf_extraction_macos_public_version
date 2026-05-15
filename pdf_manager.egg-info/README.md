@@ -2,10 +2,7 @@
 
 Local-first macOS desktop application for finding PDF files, inspecting PDF metadata, filtering the result set, and exporting the visible table to Excel.
 
-**The application runs fully offline.**
-**It does not use cloud services, proprietary APIs, or paid services.**
-
-Optional Ollama extraction talks only to a user-provided local Ollama server. Optional Docling PDF text extraction is available when Docling is installed separately.
+The application runs fully offline. It does not use cloud services, proprietary APIs, or paid services. Optional Ollama extraction talks only to a user-provided local Ollama server. Optional Docling PDF text extraction is available when Docling is installed separately.
 
 ## Objective
 

@@ -13,6 +13,8 @@ pdf_manager/core/__init__.py
 pdf_manager/core/config.py
 pdf_manager/core/export_excel.py
 pdf_manager/core/pdf_metadata.py
+pdf_manager/core/pdf_text.py
+pdf_manager/core/prompts.py
 pdf_manager/core/scanner.py
 pdf_manager/integrations/__init__.py
 pdf_manager/integrations/agent_interface.py
@@ -21,5 +23,6 @@ pdf_manager/integrations/ollama_client.py
 pdf_manager/models/__init__.py
 pdf_manager/models/pdf_record.py
 pdf_manager/ui/__init__.py
+pdf_manager/ui/distribution_chart.py
 pdf_manager/ui/main_window.py
 pdf_manager/ui/table_model.py
