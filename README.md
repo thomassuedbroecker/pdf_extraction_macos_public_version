@@ -89,7 +89,7 @@ pytest -m "not ui"
 - It separates UI code from scanning, metadata extraction, config, and export logic.
 - It supports custom local extraction prompts with Ollama without adding a required Python dependency.
 - It can optionally use Docling for slower structured PDF text extraction when Docling is installed separately.
-- It includes placeholder integration boundaries for future Docling and agent-based document-processing features.
+- It includes an optional Docling extraction backend and a placeholder boundary for future agent-based document-processing features.
 
 ## Architecture At A Glance
 
@@ -108,10 +108,18 @@ flowchart LR
     Filter -->|visible rows| Export[openpyxl Excel Export]
     UI --> Config[platformdirs JSON Config]
     UI --> Finder[macOS open / reveal actions]
-    UI --> Prompt[Custom Prompt Template]
-    Prompt --> Ollama[Local Ollama API]
+    UI -->|selected rows| ExtractionWorker[Ollama Extraction Worker]
+    ExtractionWorker --> TextBackend{PDF text backend}
+    TextBackend -->|default| PdfText[pypdf full-text extraction]
+    TextBackend -->|optional| Docling[Docling structured extraction]
+    ExtractionWorker --> Prompt[Custom Prompt Template]
+    PdfText --> Prompt
+    Docling --> Prompt
     Record --> Prompt
-    Record -. future .-> Integrations[Docling / Agent Interfaces]
+    Prompt --> Ollama[Local Ollama API]
+    Ollama --> ResultTable[LLM Results Table]
+    ResultTable -->|result rows| ResultExport[openpyxl LLM Results Export]
+    Record -. future .-> Agent[Agent Interface]
 ```
 
 The scanner and metadata code are independent of the UI. This keeps the first version testable and allows later workflows to reuse `PdfRecord` objects without rewriting the desktop table or Excel export.
@@ -176,6 +184,11 @@ flowchart LR
     Exporter --> Workbook[XLSX Workbook]
     Workbook --> PdfSheet[PDFs sheet]
     Workbook --> MetadataSheet[Export Metadata sheet]
+
+    LlmResults[LLM extraction results] --> LlmExporter[export_extraction_results_to_excel]
+    LlmExporter --> LlmWorkbook[XLSX Workbook]
+    LlmWorkbook --> LlmSheet[LLM Results sheet]
+    LlmWorkbook --> LlmMetadata[Export Metadata sheet]
 ```
 
 ## Start Here
@@ -610,6 +623,7 @@ prompt/
   2_open_source_documentation.md
   3_define_test.md
   4_update_docu.md
+  5_additional_changes.md
 ```
 
 ## Notes And Limitations
