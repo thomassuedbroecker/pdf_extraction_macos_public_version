@@ -10,7 +10,6 @@ from pdf_manager.core.prompts import (
 )
 from pdf_manager.models.pdf_record import PdfRecord
 
-
 pytestmark = pytest.mark.unit
 
 

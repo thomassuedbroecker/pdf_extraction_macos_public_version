@@ -7,7 +7,6 @@ import pytest
 
 from pdf_manager.integrations.ollama_client import OllamaClient
 
-
 pytestmark = pytest.mark.unit
 
 

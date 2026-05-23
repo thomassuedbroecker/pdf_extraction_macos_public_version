@@ -10,7 +10,6 @@ from PySide6.QtCore import QAbstractTableModel, QModelIndex, QSortFilterProxyMod
 from pdf_manager.core.export_excel import COLUMN_LABELS
 from pdf_manager.models.pdf_record import PdfRecord
 
-
 DEFAULT_COLUMNS = [
     "file_name",
     "full_path",

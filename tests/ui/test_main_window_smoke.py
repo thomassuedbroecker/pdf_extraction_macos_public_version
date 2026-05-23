@@ -10,8 +10,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from pdf_manager.core.config import AppConfig
 from pdf_manager.models.pdf_record import PdfRecord
-from pdf_manager.ui.main_window import MAX_PROMPT_FILES, MainWindow, OllamaExtractionWorker, WHOLE_MACHINE_ROOT
-
+from pdf_manager.ui.main_window import WHOLE_MACHINE_ROOT, MainWindow, OllamaExtractionWorker
 
 pytestmark = pytest.mark.ui
 

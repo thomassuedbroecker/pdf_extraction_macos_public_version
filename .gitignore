@@ -5,5 +5,9 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .env
+*.egg-info/
+build/
+dist/
+mac_app/
 
 ## Add your own custom ignore patterns below this line

@@ -6,7 +6,6 @@ import pytest
 
 from pdf_manager.core.config import AppConfig
 
-
 pytestmark = pytest.mark.unit
 
 

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 from pypdf import PdfWriter
-from pypdf.generic import DictionaryObject, DecodedStreamObject, NameObject
+from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from pdf_manager.models.pdf_record import PdfRecord
 

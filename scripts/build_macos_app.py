@@ -12,7 +12,6 @@ import plistlib
 import shutil
 from pathlib import Path
 
-
 APP_NAME = "PDF Manager"
 BUNDLE_IDENTIFIER = "local.pdftools.pdf-manager"
 EXECUTABLE_NAME = "pdf-manager"

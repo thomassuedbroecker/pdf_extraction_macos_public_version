@@ -8,12 +8,13 @@ import time
 from pathlib import Path
 from threading import Event
 
-from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot, Qt
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
@@ -22,18 +23,17 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QRadioButton,
-    QPlainTextEdit,
     QScrollArea,
-    QSplitter,
     QSizePolicy,
     QSpinBox,
+    QSplitter,
     QStyle,
-    QDoubleSpinBox,
+    QTableView,
     QTableWidget,
     QTableWidgetItem,
-    QTableView,
     QToolBar,
     QVBoxLayout,
     QWidget,

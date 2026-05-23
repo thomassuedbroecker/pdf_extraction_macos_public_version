@@ -10,7 +10,6 @@ from pdf_manager.models.pdf_record import PdfRecord
 from pdf_manager.ui.distribution_chart import DistributionChartWidget
 from pdf_manager.ui.table_model import PdfFilterProxyModel, PdfTableModel
 
-
 pytestmark = pytest.mark.ui
 
 

@@ -8,7 +8,6 @@ from openpyxl import load_workbook
 from pdf_manager.core.export_excel import export_extraction_results_to_excel, export_records_to_excel
 from pdf_manager.models.pdf_record import PdfRecord
 
-
 pytestmark = pytest.mark.unit
 COLUMNS = ["file_name", "full_path", "file_size_mb", "page_count", "title", "encrypted"]
 

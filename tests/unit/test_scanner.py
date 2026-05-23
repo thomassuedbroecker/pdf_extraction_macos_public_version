@@ -6,7 +6,6 @@ import pytest
 
 from pdf_manager.core.scanner import PdfScanner
 
-
 pytestmark = pytest.mark.unit
 
 

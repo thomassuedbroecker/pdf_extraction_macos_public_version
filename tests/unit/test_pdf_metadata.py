@@ -7,7 +7,6 @@ import pytest
 
 from pdf_manager.core.pdf_metadata import extract_pdf_metadata
 
-
 pytestmark = pytest.mark.unit
 
 

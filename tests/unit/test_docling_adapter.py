@@ -1,14 +1,12 @@
 from __future__ import annotations
 
+import builtins
 import sys
 import types
-import builtins
 
 import pytest
 
 from pdf_manager.integrations.docling_adapter import DoclingAdapter
-from pdf_manager.integrations import docling_adapter
-
 
 pytestmark = pytest.mark.unit
 
