@@ -1,2 +1,0 @@
-[console_scripts]
-pdf-manager = pdf_manager.app:main
