@@ -11,3 +11,4 @@ dist/
 mac_app/
 
 ## Add your own custom ignore patterns below this line
+pdf_extraction_mac_all.code-workspace
